@@ -1,0 +1,12 @@
+IPHONE DEPLOYMENT CHECKLIST
+[ ] Create GitHub account/repository
+[ ] Upload app.py
+[ ] Upload requirements.txt
+[ ] Upload README.md
+[ ] Open Streamlit Community Cloud
+[ ] Connect GitHub
+[ ] Create app -> select repo/main/app.py
+[ ] Deploy
+[ ] Open the resulting streamlit.app URL on iPhone Safari
+[ ] Share -> Add to Home Screen
+[ ] Test a ticker
