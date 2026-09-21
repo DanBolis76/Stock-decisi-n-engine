@@ -683,7 +683,7 @@ if page=="Stock Analyzer":
             "partnership", "revenue", "profit"
         ]
 
-        displayed_scores = []
+        relevant_headlines = 0
         company_name = str(i.get("longName") or i.get("shortName") or "").lower()
 
         ticker_lower = ticker.lower()
@@ -779,7 +779,8 @@ if page=="Stock Analyzer":
                 min(100, raw_score * 20 * relevance_weight)
             )
 
-            displayed_scores.append(sentiment_score)
+            if relevance_weight > 0:
+                relevant_headlines += 1
 
             if sentiment_score >= 20:
                 sentiment = "🟢 Positive"
@@ -829,21 +830,13 @@ if page=="Stock Analyzer":
 
             st.divider()
 
-        if displayed_scores:
-            displayed_average = round(
-                sum(displayed_scores)
-                / len(displayed_scores)
-            )
-        else:
-            displayed_average = 0
-
         st.metric(
             "Overall News Sentiment",
-            f"{displayed_average:+d}/100"
+            f"{news_score:+.0f}/100"
         )
 
         st.caption(
-            f"Based on {len(displayed_scores)} recent headlines. "
+            f"Based on {relevant_headlines} relevant headlines. "
             "Positive scores favor bullish sentiment; "
             "negative scores favor bearish sentiment."
         )
