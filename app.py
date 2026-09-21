@@ -69,7 +69,7 @@ def risk(t,info):
     s += 8 if t["rel"]<.5 else 0
     if info.get("totalDebt") and info.get("totalCash") and info["totalDebt"]>info["totalCash"]: s+=10
     return clamp(s)
-def analyze_news(news, ticker="", info=None):
+def _legacy_analyze_news(news, ticker="", info=None):
     """
     Analyze recent headlines.
 
@@ -425,6 +425,167 @@ def analyze_news(news, ticker="", info=None):
     news_risk = min(100, round(risk_points * 0.65))
 
     return average_sentiment, news_risk
+
+
+def news_intelligence(news, ticker="", info=None):
+    """Return one consistent analysis used by both calculations and UI."""
+    info = info or {}
+    ticker_lower = ticker.lower().strip()
+    company_keywords = {
+        "AAPL": ["apple", "iphone", "ipad", "mac", "tim cook"],
+        "MSFT": ["microsoft", "azure", "windows", "satya nadella"],
+        "NVDA": ["nvidia", "geforce", "jensen huang"],
+        "AMD": ["amd", "advanced micro devices", "lisa su"],
+        "AMZN": ["amazon", "aws", "andy jassy"],
+        "GOOGL": ["google", "alphabet", "youtube", "gemini"],
+        "GOOG": ["google", "alphabet", "youtube", "gemini"],
+        "META": ["meta", "facebook", "instagram", "whatsapp", "zuckerberg"],
+        "TSLA": ["tesla", "elon musk", "cybertruck"],
+    }
+    direct_terms = list(company_keywords.get(ticker.upper(), []))
+    for name in [info.get("shortName", ""), info.get("longName", "")]:
+        name = str(name).lower().strip()
+        if not name:
+            continue
+        direct_terms.append(name)
+        cleaned = re.sub(r"\s+(inc\.?|corporation|corp\.?|ltd\.?|plc)$", "", name)
+        if cleaned:
+            direct_terms.append(cleaned)
+
+    sector_words = [
+        "technology", "tech stocks", "big tech", "nasdaq", "semiconductor",
+        "semiconductors", "artificial intelligence", "ai stocks",
+    ]
+    market_words = [
+        "s&p 500", "stock market", "wall street", "federal reserve", "fed",
+        "interest rates", "inflation", "recession", "economy",
+    ]
+    positive_phrases = {
+        "beats estimates": 5, "raises guidance": 5, "record revenue": 4,
+        "price target raised": 4, "analyst upgrade": 4, "wins contract": 4,
+        "share buyback": 3, "shrinking share count": 3,
+        "regulatory approval": 4, "strong demand": 4,
+    }
+    negative_phrases = {
+        "misses estimates": 5, "cuts guidance": 5, "lowers guidance": 5,
+        "price target cut": 4, "analyst downgrade": 4,
+        "sec investigation": 5, "class action lawsuit": 4,
+        "data breach": 5, "product recall": 5, "profit warning": 5,
+    }
+    positive_words = {
+        "beat": 3, "beats": 3, "growth": 2, "upgrade": 4, "upgraded": 4,
+        "surge": 3, "surges": 3, "record": 2, "strong": 2, "buy": 3,
+        "raises": 3, "raised": 3, "profit": 2, "profits": 2,
+        "bullish": 3, "outperform": 4, "approval": 3, "approved": 3,
+        "partnership": 2, "launch": 1, "higher": 2, "rises": 2,
+        "rise": 2, "gains": 2, "gain": 2, "boosting": 2, "jumps": 3,
+        "rallies": 3,
+    }
+    negative_words = {
+        "miss": 3, "misses": 3, "downgrade": 4, "downgraded": 4,
+        "fall": 2, "falls": 2, "drop": 2, "drops": 2, "lawsuit": 4,
+        "cut": 3, "cuts": 3, "weak": 2, "loss": 3, "losses": 3,
+        "warning": 3, "bearish": 3, "underperform": 4,
+        "investigation": 4, "recall": 4, "layoffs": 3, "lower": 2,
+        "slips": 2, "declines": 2, "plunges": 4,
+    }
+    event_words = {
+        "Earnings": ["earnings", "revenue", "eps", "quarter", "guidance", "profit"],
+        "Analyst Rating": ["upgrade", "downgrade", "price target", "outperform", "underperform", "rating"],
+        "Management": ["ceo", "cfo", "executive", "resigns", "resigned", "appointed"],
+        "Product": ["launch", "iphone", "product", "release", "unveils"],
+        "Legal/Regulatory": ["lawsuit", "investigation", "regulator", "antitrust", "sec", "doj"],
+        "M&A": ["acquisition", "acquire", "merger", "buyout", "takeover"],
+    }
+    risk_events = {
+        "bankruptcy": (50, "Bankruptcy"), "fraud": (40, "Fraud"),
+        "accounting irregularities": (40, "Accounting"),
+        "investigation": (25, "Investigation"), "data breach": (25, "Cybersecurity"),
+        "recall": (25, "Product recall"), "lawsuit": (20, "Legal"),
+        "antitrust": (20, "Regulatory"), "ceo resigns": (20, "Management"),
+        "layoffs": (12, "Layoffs"), "acquisition": (10, "M&A"),
+        "merger": (10, "M&A"), "guidance": (8, "Guidance"),
+        "earnings": (8, "Earnings"),
+    }
+    positive_percent = re.compile(
+        r"\b(?:up|gain(?:s|ed)?|jump(?:s|ed)?|surge(?:s|d)?|rise(?:s|n)?|rose|"
+        r"climb(?:s|ed)?|soar(?:s|ed)?)\s+(?:more\s+than\s+)?\d+(?:\.\d+)?%"
+    )
+    negative_percent = re.compile(
+        r"\b(?:down|fall(?:s|en)?|fell|drop(?:s|ped)?|decline(?:s|d)?|"
+        r"slip(?:s|ped)?|plunge(?:s|d)?|sink(?:s)?|sank)\s+"
+        r"(?:more\s+than\s+)?\d+(?:\.\d+)?%"
+    )
+
+    stories, total_score, total_weight, risk_scores = [], 0.0, 0.0, []
+    for index, item in enumerate((news or [])[:15]):
+        content = item.get("content", item)
+        if not isinstance(content, dict):
+            continue
+        title = content.get("title") or item.get("title") or ""
+        summary = content.get("summary") or item.get("summary") or ""
+        if not title:
+            continue
+        lowtitle = title.lower()
+        analysis_text = f"{title} {title} {summary}".lower()
+        is_direct = bool(
+            (ticker_lower and ticker_lower in lowtitle)
+            or any(term and term in lowtitle for term in direct_terms)
+        )
+        if is_direct:
+            relevance, relevance_weight = "🎯 DIRECT", 1.0
+        elif any(word in lowtitle for word in sector_words):
+            relevance, relevance_weight = "🏭 SECTOR", 0.20
+        elif any(word in lowtitle for word in market_words):
+            relevance, relevance_weight = "🌎 MARKET", 0.10
+        else:
+            continue
+
+        words = set(re.sub(r"[,.:;()]", " ", analysis_text).split())
+        positive = sum(w for p, w in positive_phrases.items() if p in analysis_text)
+        negative = sum(w for p, w in negative_phrases.items() if p in analysis_text)
+        positive += sum(w for token, w in positive_words.items() if token in words)
+        negative += sum(w for token, w in negative_words.items() if token in words)
+        if positive_percent.search(analysis_text):
+            positive += 4
+        if negative_percent.search(analysis_text):
+            negative += 4
+        score = round(max(-100, min(100, (positive - negative) * 12 * relevance_weight)))
+        sentiment = "🟢 Positive" if score >= 15 else "🔴 Negative" if score <= -15 else "🟡 Neutral"
+
+        event_type = "General"
+        for event, keywords in event_words.items():
+            if any(word in analysis_text for word in keywords):
+                event_type = event
+                break
+        matched_risks = [(points, label) for phrase, (points, label) in risk_events.items() if phrase in analysis_text]
+        event_risk, risk_reason = max(matched_risks, default=(0, "No risk event detected"))
+        impact = "HIGH" if event_risk >= 20 or abs(score) >= 60 else "MEDIUM" if event_risk >= 10 or abs(score) >= 30 else "LOW"
+        explanation = f"{positive} positive vs {negative} negative signal points"
+        recency_weight = max(0.35, 1.0 - index * 0.05)
+        total_score += score * recency_weight
+        total_weight += recency_weight
+        risk_scores.append(event_risk * relevance_weight)
+        stories.append({
+            "title": title,
+            "publisher": content.get("provider", {}).get("displayName") or item.get("publisher") or "Source unavailable",
+            "link": content.get("canonicalUrl", {}).get("url") or content.get("clickThroughUrl", {}).get("url") or item.get("link"),
+            "relevance": relevance, "score": score, "sentiment": sentiment,
+            "event_type": event_type, "impact": impact, "event_risk": round(event_risk * relevance_weight),
+            "risk_reason": risk_reason, "explanation": explanation,
+        })
+
+    news_score = round(total_score / total_weight) if total_weight else 0
+    sorted_risks = sorted(risk_scores, reverse=True)
+    news_risk = round(min(100, (sorted_risks[0] if sorted_risks else 0) + sum(sorted_risks[1:]) * 0.25))
+    risk_reasons = sorted({s["risk_reason"] for s in stories if s["event_risk"] > 0})
+    risk_summary = ", ".join(risk_reasons) if risk_reasons else "No risk event detected"
+    return stories, news_score, news_risk, risk_summary
+
+
+def analyze_news(news, ticker="", info=None):
+    _, news_score, news_risk, _ = news_intelligence(news, ticker, info)
+    return news_score, news_risk
 def plan(t, fs, rs, news_score=0, news_risk=0):
     def num(x):
         if hasattr(x, "iloc"):
@@ -447,12 +608,28 @@ def plan(t, fs, rs, news_score=0, news_risk=0):
 
     rr = (t1 - p) / (p - stop) if p > stop else 0
 
-    entry = clamp(
-    0.45 * num(t["technical"])
-    + 0.15 * fs
-    + 0.25 * (100 - rs)
-    + 0.15 * ((news_score + 100) / 2)
-)
+    technical_component = 0.45 * num(t["technical"])
+    fundamental_component = 0.15 * fs
+    risk_component = 0.25 * (100 - rs)
+    news_component = 0.15 * ((news_score + 100) / 2)
+    raw_entry = clamp(
+        technical_component
+        + fundamental_component
+        + risk_component
+        + news_component
+    )
+
+    if rr < 1:
+        rr_multiplier, rr_label = 0.55, "Avoid"
+    elif rr < 1.5:
+        rr_multiplier, rr_label = 0.75, "Weak"
+    elif rr < 2:
+        rr_multiplier, rr_label = 0.90, "Acceptable"
+    else:
+        rr_multiplier, rr_label = 1.0, "Favorable"
+
+    entry = clamp(raw_entry * rr_multiplier)
+    rr_penalty = entry - raw_entry
 
 
     exit_score = clamp(
@@ -465,7 +642,18 @@ def plan(t, fs, rs, news_score=0, news_risk=0):
     + 0.20 * news_risk
 )
 
-    return entry, exit_score, lo, hi, stop, t1, t2, rr
+    score_details = {
+        "Technical contribution": technical_component,
+        "Fundamental contribution": fundamental_component,
+        "Risk contribution": risk_component,
+        "News contribution": news_component,
+        "Raw Entry Score": raw_entry,
+        "R/R penalty": rr_penalty,
+        "Final Entry Score": entry,
+        "R/R quality": rr_label,
+    }
+
+    return entry, exit_score, lo, hi, stop, t1, t2, rr, score_details
 
 @st.cache_data(ttl=300)
 def get_data(ticker,period="2y"):
@@ -553,7 +741,7 @@ if page=="Stock Analyzer":
     a=analyze(ticker,"2y")
     if not a: st.error("Data unavailable or insufficient history."); st.stop()
     h, i, news, t, fs, fv, rs, v, news_score, news_risk = a
-    entry,exit,lo,hi,stop,t1,t2,rr=v
+    entry,exit,lo,hi,stop,t1,t2,rr,score_details=v
     c1,c2,c3,c4=st.columns(4); c1.metric("Entry Score",f"{entry:.0f}/100"); c2.metric("Exit Score",f"{exit:.0f}/100"); c3.metric("Risk",f"{rs:.0f}/100"); c4.metric("R/R",f"1 : {rr:.1f}")
     st.subheader(f"{ticker} — {i.get('longName',ticker)}")
     st.line_chart(h["Close"].tail(180))
@@ -566,7 +754,7 @@ if page=="Stock Analyzer":
     )
 
     n2.metric(
-        "News Risk",
+        "News Event Risk",
         f"{news_risk:.0f}/100"
     )    
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
@@ -606,319 +794,56 @@ if page=="Stock Analyzer":
         st.dataframe(pd.DataFrame({"Metric":list(fv.keys()),"Value":list(fv.values())}),hide_index=True,use_container_width=True)
     with tabs[2]:
         st.subheader("News Intelligence")
-
-        positive_words = {
-            "beat": 3, "beats": 3,
-            "growth": 2,
-            "upgrade": 4, "upgraded": 4,
-            "surge": 3,
-            "record": 2,
-            "strong": 2,
-            "buy": 3,
-            "raises": 3, "raised": 3,
-            "profit": 2, "profits": 2,
-            "bullish": 3,
-            "outperform": 4,
-            "approval": 3, "approved": 3,
-            "partnership": 2,
-            "launch": 1,
-            "higher": 2, "rises": 2, "rise": 2,
-            "gains": 2, "gain": 2
-        }
-
-        negative_words = {
-            "miss": 3, "misses": 3,
-            "downgrade": 4, "downgraded": 4,
-            "fall": 2, "falls": 2,
-            "drop": 2, "drops": 2,
-            "lawsuit": 4,
-            "cut": 3, "cuts": 3,
-            "weak": 2,
-            "loss": 3, "losses": 3,
-            "negative": 2,
-            "warning": 3,
-            "bearish": 3,
-            "underperform": 4,
-            "investigation": 4,
-            "recall": 4,
-            "layoffs": 3,
-            "lower": 2, "slips": 2, "declines": 2
-        }
-
-        positive_phrases = {
-            "beats estimates": 5,
-            "raises guidance": 5,
-            "record revenue": 4,
-            "price target raised": 4,
-            "analyst upgrade": 4,
-            "wins contract": 4,
-            "share buyback": 3,
-            "shrinking share count": 3,
-            "regulatory approval": 4,
-        }
-
-        negative_phrases = {
-            "misses estimates": 5,
-            "cuts guidance": 5,
-            "lowers guidance": 5,
-            "price target cut": 4,
-            "analyst downgrade": 4,
-            "sec investigation": 5,
-            "class action lawsuit": 4,
-            "data breach": 5,
-            "product recall": 5,
-        }
-
-        event_words = {
-            "Earnings": [
-                "earnings", "revenue", "eps",
-                "quarter", "guidance", "profit"
-            ],
-            "Analyst Rating": [
-                "upgrade", "downgrade",
-                "price target", "outperform",
-                "underperform", "rating"
-            ],
-            "Management": [
-                "ceo", "cfo", "executive",
-                "resigns", "resigned", "appointed"
-            ],
-            "Product": [
-                "launch", "iphone", "product",
-                "release", "unveils"
-            ],
-            "Legal/Regulatory": [
-                "lawsuit", "investigation",
-                "regulator", "antitrust",
-                "sec", "doj"
-            ],
-            "M&A": [
-                "acquisition", "acquire",
-                "merger", "buyout", "takeover"
-            ]
-        }
-
-        high_impact_words = [
-            "earnings", "guidance", "ceo", "cfo",
-            "acquisition", "merger", "lawsuit",
-            "investigation", "downgrade",
-            "upgrade", "recall"
-        ]
-
-        medium_impact_words = [
-            "launch", "product", "price target",
-            "partnership", "revenue", "profit"
-        ]
-
-        relevant_headlines = 0
-        company_name = str(i.get("longName") or i.get("shortName") or "").lower()
-
-        ticker_lower = ticker.lower()
-
-        company_keywords = {
-            "AAPL": ["apple", "iphone", "ipad", "mac", "tim cook"],
-            "MSFT": ["microsoft", "azure", "windows", "satya nadella"],
-            "NVDA": ["nvidia", "geforce", "jensen huang"],
-            "AMD": ["amd", "advanced micro devices", "lisa su"],
-            "AMZN": ["amazon", "aws", "andy jassy"],
-            "GOOGL": ["google", "alphabet", "youtube", "gemini"],
-            "GOOG": ["google", "alphabet", "youtube", "gemini"],
-            "META": ["meta", "facebook", "instagram", "whatsapp", "zuckerberg"],
-            "TSLA": ["tesla", "elon musk", "cybertruck"],
-        }
-
-        direct_terms = company_keywords.get(ticker.upper(), [])
-
-        if company_name:
-            direct_terms.append(company_name)
-        for n in (news or [])[:15]:
-
-            content = n.get("content", n)
-
-            title = (
-                content.get("title")
-                or n.get("title")
-                or "Sin título"
-            )
-
-            summary = (
-                content.get("summary")
-                or n.get("summary")
-                or ""
-            )
-
-            publisher = (
-                content.get("provider", {}).get("displayName")
-                or n.get("publisher")
-                or "Fuente no disponible"
-            )
-
-            link = (
-                content.get("canonicalUrl", {}).get("url")
-                or content.get("clickThroughUrl", {}).get("url")
-                or n.get("link")
-            )
-
-            lowtitle = title.lower()
-            # Determine how relevant this headline is to the selected stock
-            is_direct = (
-                ticker_lower in lowtitle
-                or any(term in lowtitle for term in direct_terms)
-            )
-
-            sector_words = [
-                "technology", "tech stocks", "big tech",
-                "nasdaq", "semiconductor", "semiconductors",
-                "artificial intelligence", "ai stocks"
-            ]
-
-            market_words = [
-                "s&p 500", "stock market", "wall street",
-                "federal reserve", "fed", "interest rates",
-                "inflation", "recession", "economy"
-            ]
-
-            is_sector = any(word in lowtitle for word in sector_words)
-            is_market = any(word in lowtitle for word in market_words)
-
-            if is_direct:
-                relevance = "🎯 DIRECT"
-                relevance_weight = 1.0
-            elif is_sector:
-                relevance = "🏭 SECTOR"
-                relevance_weight = 0.20
-            elif is_market:
-                relevance = "🌎 MARKET"
-                relevance_weight = 0.10
-            else:
-                relevance = "🚫 IRRELEVANT"
-                relevance_weight = 0.0
-
-            # Do not display unrelated Yahoo Finance stories for other companies.
-            if relevance_weight == 0:
-                continue
-
-            analysis_text = f"{title} {title} {summary}".lower()
-            words = set(
-                analysis_text.replace(",", " ")
-                    .replace(".", " ")
-                    .replace(":", " ")
-                    .replace(";", " ")
-                    .replace("(", " ")
-                    .replace(")", " ")
-                    .split()
-            )
-
-            positive_score = sum(
-                weight
-                for word, weight in positive_words.items()
-                if word in words
-            )
-
-            negative_score = sum(
-                weight
-                for word, weight in negative_words.items()
-                if word in words
-            )
-
-            positive_score += sum(
-                weight
-                for phrase, weight in positive_phrases.items()
-                if phrase in analysis_text
-            )
-
-            negative_score += sum(
-                weight
-                for phrase, weight in negative_phrases.items()
-                if phrase in analysis_text
-            )
-
-            positive_percent_pattern = re.compile(
-                r"\b(?:up|gain(?:s|ed)?|jump(?:s|ed)?|surge(?:s|d)?|"
-                r"rise(?:s|n)?|rose|climb(?:s|ed)?|soar(?:s|ed)?)\s+"
-                r"(?:more\s+than\s+)?\d+(?:\.\d+)?%"
-            )
-            negative_percent_pattern = re.compile(
-                r"\b(?:down|fall(?:s|en)?|fell|drop(?:s|ped)?|decline(?:s|d)?|"
-                r"slip(?:s|ped)?|plunge(?:s|d)?|sink(?:s)?|sank)\s+"
-                r"(?:more\s+than\s+)?\d+(?:\.\d+)?%"
-            )
-
-            if positive_percent_pattern.search(analysis_text):
-                positive_score += 4
-
-            if negative_percent_pattern.search(analysis_text):
-                negative_score += 4
-
-            raw_score = positive_score - negative_score
-
-            sentiment_score = max(
-                -100,
-                min(100, raw_score * 12 * relevance_weight)
-            )
-
-            relevant_headlines += 1
-
-            if sentiment_score >= 15:
-                sentiment = "🟢 Positive"
-            elif sentiment_score <= -15:
-                sentiment = "🔴 Negative"
-            else:
-                sentiment = "🟡 Neutral"
-
-            event_type = "General"
-
-            for event, keywords in event_words.items():
-                if any(word in lowtitle for word in keywords):
-                    event_type = event
-                    break
-
-            if any(
-                word in lowtitle
-                for word in high_impact_words
-            ):
-                impact = "HIGH"
-
-            elif any(
-                word in lowtitle
-                for word in medium_impact_words
-            ):
-                impact = "MEDIUM"
-
-            else:
-                impact = "LOW"
-
-            st.markdown(
-                f"### {sentiment} — {title}"
-            )
-
-            st.caption(
-                f"{publisher} | "
-                f"{relevance} | "
-                f"Event: {event_type} | "
-                f"Impact: {impact} | "
-                f"Score: {sentiment_score:+.0f}"
-            )
-
-            if link:
-                st.markdown(
-                    f"[Open article]({link})"
-                )
-
-            st.divider()
-
-        st.metric(
-            "Overall News Sentiment",
-            f"{news_score:+.0f}/100"
+        stories, unified_news_score, unified_news_risk, risk_summary = news_intelligence(
+            news, ticker, i
         )
 
+        for story in stories:
+            st.markdown(f"### {story['sentiment']} — {story['title']}")
+            st.caption(
+                f"{story['publisher']} | {story['relevance']} | "
+                f"Event: {story['event_type']} | Impact: {story['impact']} | "
+                f"Score: {story['score']:+.0f} | Event Risk: {story['event_risk']}/100"
+            )
+            st.caption(f"Why: {story['explanation']}")
+            if story["link"]:
+                st.markdown(f"[Open article]({story['link']})")
+            st.divider()
+
+        if not stories:
+            st.info("No relevant recent headlines were found.")
+
+        st.metric("Overall News Sentiment", f"{unified_news_score:+.0f}/100")
+        st.metric("News Event Risk", f"{unified_news_risk:.0f}/100")
         st.caption(
-            f"Based on {relevant_headlines} relevant headlines. "
-            "Positive scores favor bullish sentiment; "
-            "negative scores favor bearish sentiment."
+            f"Based on {len(stories)} relevant headlines. "
+            f"Risk status: {risk_summary}."
         )
     with tabs[3]:
         st.write({"Entry Zone":f"${lo:.2f}–${hi:.2f}","Stop":f"${stop:.2f}","Target 1":f"${t1:.2f}","Target 2":f"${t2:.2f}","Risk/Reward":f"1:{rr:.1f}"})
+        st.subheader("Entry Score Breakdown")
+        breakdown_rows = []
+        for label, value in score_details.items():
+            if label == "R/R quality":
+                continue
+            breakdown_rows.append({
+                "Component": label,
+                "Points": round(value, 1),
+            })
+        st.dataframe(
+            pd.DataFrame(breakdown_rows),
+            hide_index=True,
+            use_container_width=True,
+        )
+        st.metric("R/R Quality", score_details["R/R quality"])
+        if rr < 1:
+            st.error("Avoid: expected reward is smaller than the capital at risk.")
+        elif rr < 1.5:
+            st.warning("Weak setup: Risk/Reward is below 1:1.5.")
+        elif rr < 2:
+            st.info("Acceptable setup: Risk/Reward is between 1:1.5 and 1:2.")
+        else:
+            st.success("Favorable setup: Risk/Reward is at least 1:2.")
 
 elif page=="Scanner":
     st.header("🔎 Opportunity Scanner")
