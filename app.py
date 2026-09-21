@@ -69,7 +69,7 @@ def risk(t,info):
     s += 8 if t["rel"]<.5 else 0
     if info.get("totalDebt") and info.get("totalCash") and info["totalDebt"]>info["totalCash"]: s+=10
     return clamp(s)
-def analyze_news(news):
+def analyze_news(news, ticker=""):
     """
     Analyze recent headlines.
 
@@ -218,10 +218,33 @@ def analyze_news(news):
             or ""
         )
 
+        summary = (
+            content.get("summary")
+            or item.get("summary")
+            or ""
+        )
+
         if not title:
             continue
 
-        text = title.lower().strip()
+        # Analyze both headline and article summary.
+        # Headline is repeated so it has more influence than the summary.
+        text = f"{title} {title} {summary}".lower().strip()
+        # --------------------------------
+        # Relevance filter
+        # --------------------------------
+        ticker_lower = ticker.lower().strip()
+
+        # Check whether the ticker appears in the story.
+        ticker_relevant = (
+            ticker_lower
+            and ticker_lower in text
+        )
+
+        # Stories that explicitly mention the ticker receive full weight.
+        # Other stories are kept, but receive much less influence because
+        # Yahoo may return sector/market stories related only indirectly.
+        relevance_weight = 1.0 if ticker_relevant else 0.25
 
         positive = 0
         negative = 0
@@ -269,8 +292,8 @@ def analyze_news(news):
         # Newer headlines receive more weight.
         recency_weight = max(0.35, 1.0 - index * 0.05)
 
-        total_score += headline_score * recency_weight
-        total_weight += recency_weight
+        total_score += headline_score * recency_weight * relevance_weight
+        total_weight += recency_weight * relevance_weight
 
         # -----------------------------
         # Event-risk analysis
@@ -282,7 +305,7 @@ def analyze_news(news):
                 headline_risk = max(headline_risk, points)
 
         # Avoid adding unlimited risk for repeated similar stories.
-        risk_points += headline_risk
+        risk_points += headline_risk * relevance_weight
 
     # -----------------------------
     # Final news sentiment
@@ -362,7 +385,7 @@ def analyze(ticker, period="2y"):
     fs, fv = fundamentals(i)
     rs = risk(t, i)
 
-    news_score, news_risk = analyze_news(n)
+    news_score, news_risk = analyze_news(n, ticker)
 
     vals = plan(
         t,
@@ -560,7 +583,26 @@ if page=="Stock Analyzer":
         ]
 
         displayed_scores = []
+        company_name = str(i.get("longName") or i.get("shortName") or "").lower()
 
+        ticker_lower = ticker.lower()
+
+        company_keywords = {
+            "AAPL": ["apple", "iphone", "ipad", "mac", "tim cook"],
+            "MSFT": ["microsoft", "azure", "windows", "satya nadella"],
+            "NVDA": ["nvidia", "geforce", "jensen huang"],
+            "AMD": ["amd", "advanced micro devices", "lisa su"],
+            "AMZN": ["amazon", "aws", "andy jassy"],
+            "GOOGL": ["google", "alphabet", "youtube", "gemini"],
+            "GOOG": ["google", "alphabet", "youtube", "gemini"],
+            "META": ["meta", "facebook", "instagram", "whatsapp", "zuckerberg"],
+            "TSLA": ["tesla", "elon musk", "cybertruck"],
+        }
+
+        direct_terms = company_keywords.get(ticker.upper(), [])
+
+        if company_name:
+            direct_terms.append(company_name)
         for n in (news or [])[:15]:
 
             content = n.get("content", n)
@@ -584,7 +626,18 @@ if page=="Stock Analyzer":
             )
 
             lowtitle = title.lower()
+            # Determine how relevant this headline is to the selected stock
+            is_direct = (
+                ticker_lower in lowtitle
+                or any(term in lowtitle for term in direct_terms)
+            )
 
+            if is_direct:
+                relevance = "🎯 DIRECT"
+                relevance_weight = 1.0
+            else:
+                relevance = "🌐 MARKET / SECTOR"
+                relevance_weight = 0.35
             positive_score = sum(
                 weight
                 for word, weight in positive_words.items()
@@ -601,7 +654,7 @@ if page=="Stock Analyzer":
 
             sentiment_score = max(
                 -100,
-                min(100, raw_score * 20)
+                min(100, raw_score * 20 * relevance_weight)
             )
 
             displayed_scores.append(sentiment_score)
@@ -641,9 +694,10 @@ if page=="Stock Analyzer":
 
             st.caption(
                 f"{publisher} | "
+                f"{relevance} | "
                 f"Event: {event_type} | "
                 f"Impact: {impact} | "
-                f"Score: {sentiment_score:+d}"
+                f"Score: {sentiment_score:+.0f}"
             )
 
             if link:
