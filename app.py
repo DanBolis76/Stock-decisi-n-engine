@@ -1,5 +1,5 @@
 
-import math, io
+import math, io, re
 from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
@@ -832,6 +832,23 @@ if page=="Stock Analyzer":
                 for phrase, weight in negative_phrases.items()
                 if phrase in analysis_text
             )
+
+            positive_percent_pattern = re.compile(
+                r"\b(?:up|gain(?:s|ed)?|jump(?:s|ed)?|surge(?:s|d)?|"
+                r"rise(?:s|n)?|rose|climb(?:s|ed)?|soar(?:s|ed)?)\s+"
+                r"(?:more\s+than\s+)?\d+(?:\.\d+)?%"
+            )
+            negative_percent_pattern = re.compile(
+                r"\b(?:down|fall(?:s|en)?|fell|drop(?:s|ped)?|decline(?:s|d)?|"
+                r"slip(?:s|ped)?|plunge(?:s|d)?|sink(?:s)?|sank)\s+"
+                r"(?:more\s+than\s+)?\d+(?:\.\d+)?%"
+            )
+
+            if positive_percent_pattern.search(analysis_text):
+                positive_score += 4
+
+            if negative_percent_pattern.search(analysis_text):
+                negative_score += 4
 
             raw_score = positive_score - negative_score
 
