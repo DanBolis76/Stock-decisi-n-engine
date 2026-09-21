@@ -632,12 +632,33 @@ if page=="Stock Analyzer":
                 or any(term in lowtitle for term in direct_terms)
             )
 
+            sector_words = [
+                "technology", "tech stocks", "big tech",
+                "nasdaq", "semiconductor", "semiconductors",
+                "artificial intelligence", "ai stocks"
+            ]
+
+            market_words = [
+                "s&p 500", "stock market", "wall street",
+                "federal reserve", "fed", "interest rates",
+                "inflation", "recession", "economy"
+            ]
+
+            is_sector = any(word in lowtitle for word in sector_words)
+            is_market = any(word in lowtitle for word in market_words)
+
             if is_direct:
                 relevance = "🎯 DIRECT"
                 relevance_weight = 1.0
+            elif is_sector:
+                relevance = "🏭 SECTOR"
+                relevance_weight = 0.20
+            elif is_market:
+                relevance = "🌎 MARKET"
+                relevance_weight = 0.10
             else:
-                relevance = "🌐 MARKET / SECTOR"
-                relevance_weight = 0.35
+                relevance = "🚫 IRRELEVANT"
+                relevance_weight = 0.0
             positive_score = sum(
                 weight
                 for word, weight in positive_words.items()
