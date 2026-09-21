@@ -183,7 +183,36 @@ if page=="Stock Analyzer":
     q1,q2,q3,q4=st.columns(4); q1.metric("Price",f"${t['p']:.2f}"); q2.metric("Entry Zone",f"${lo:.2f}–${hi:.2f}"); q3.metric("Stop",f"${stop:.2f}"); q4.metric("Target 1",f"${t1:.2f}")
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
     with tabs[0]:
-        st.dataframe(pd.DataFrame({"Indicator":["SMA20","SMA50","SMA200","RSI14","MACD","Signal","Support","Resistance","Relative Volume"],"Value":[t["sma20"],t["sma50"],t["sma200"],t["rrsi"],float(t["macd"].iloc[-1]),float(t["sig"].iloc[-1]),t["sup"],t["res"],t["rel"]]}),hide_index=True,use_container_width=True)
+                technical_data = {
+            "Indicator": [
+                "SMA20",
+                "SMA50",
+                "SMA200",
+                "RSI14",
+                "MACD",
+                "Signal",
+                "Support",
+                "Resistance",
+                "Relative Volume",
+            ],
+            "Value": [
+                t["sma20"],
+                t["sma50"],
+                t["sma200"],
+                t["rrsi"],
+                float(t["macd"].iloc[-1]),
+                float(t["sig"].iloc[-1]),
+                t["sup"],
+                t["res"],
+                t["rel"],
+            ],
+        }
+
+    st.dataframe(
+        pd.DataFrame(technical_data),
+        hide_index=True,
+        use_container_width=True,
+    )
     with tabs[1]:
         st.metric("Fundamental Score",f"{fs:.0f}/100")
         st.dataframe(pd.DataFrame({"Metric":list(fv.keys()),"Value":list(fv.values())}),hide_index=True,use_container_width=True)
@@ -192,13 +221,37 @@ if page=="Stock Analyzer":
         positive_words=["beat","growth","upgrade","surge","record","strong","buy","raises","positive","profit"]
         negative_words=["miss","downgrade","fall","drop","lawsuit","cut","weak","loss","negative","warning"]
         for n in (news or [])[:15]:
-            title=n.get("title",""); lowtitle=title.lower()
-            p=sum(w in lowtitle for w in positive_words); ng=sum(w in lowtitle for w in negative_words)
-            label="🟢 Positive" if p>ng else "🔴 Negative" if ng>p else "🟡 Neutral"
-            pos+=p; neg+=ng
+            content = n.get("content", n)
+
+            title = content.get("title") or n.get("title") or "Sin título"
+
+            publisher = (
+                content.get("provider", {}).get("displayName")
+                or n.get("publisher")
+                or "Fuente no disponible"
+            )
+
+            link = (
+                content.get("canonicalUrl", {}).get("url")
+                or content.get("clickThroughUrl", {}).get("url")
+                or n.get("link")
+            )
+
+            lowtitle = title.lower()
+
+            p = sum(w in lowtitle for w in positive_words)
+            ng = sum(w in lowtitle for w in negative_words)
+
+            label = "🟢 Positive" if p > ng else "🔴 Negative" if ng > p else "🟡 Neutral"
+
+            pos += p
+            neg += ng
+
             st.markdown(f"**{label} — {title}**")
-            st.caption(n.get("publisher",""))
-            if n.get("link"): st.markdown(f"[Open article]({n['link']})")
+            st.caption(publisher)
+
+            if link:
+                st.markdown(f"[Open article]({link})")
         st.metric("Headline Sentiment (simple V1)",f"{pos-neg:+d}")
         st.caption("V1 sentiment is keyword-based; a production version should use a dedicated NLP/news API.")
     with tabs[3]:
