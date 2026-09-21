@@ -456,6 +456,12 @@ def news_intelligence(news, ticker="", info=None):
         cleaned = re.sub(r"\s+(inc\.?|corporation|corp\.?|ltd\.?|plc)$", "", name)
         if cleaned:
             direct_terms.append(cleaned)
+    target_aliases = sorted(
+        {alias for alias in [ticker_lower, *direct_terms] if alias},
+        key=len,
+        reverse=True,
+    )
+    target_pattern = "(?:" + "|".join(re.escape(alias) for alias in target_aliases) + ")"
 
     sector_words = [
         "technology", "tech stocks", "big tech", "nasdaq", "semiconductor",
@@ -479,7 +485,7 @@ def news_intelligence(news, ticker="", info=None):
     }
     positive_words = {
         "beat": 3, "beats": 3, "growth": 2, "upgrade": 4, "upgraded": 4,
-        "surge": 3, "surges": 3, "record": 2, "strong": 2, "buy": 3,
+        "surge": 3, "surges": 3, "record": 2, "strong": 2,
         "raises": 3, "raised": 3, "profit": 2, "profits": 2,
         "bullish": 3, "outperform": 4, "approval": 3, "approved": 3,
         "partnership": 2, "launch": 1, "higher": 2, "rises": 2,
@@ -495,6 +501,10 @@ def news_intelligence(news, ticker="", info=None):
         "slips": 2, "declines": 2, "plunges": 4,
     }
     event_words = {
+        "Geopolitical/Policy": [
+            "trump", "xi", "white house", "congress", "china", "tariff",
+            "trade restriction", "export control", "sanction", "war",
+        ],
         "Earnings": ["earnings", "revenue", "eps", "quarter", "guidance", "profit"],
         "Analyst Rating": ["upgrade", "downgrade", "price target", "outperform", "underperform", "rating"],
         "Management": ["ceo", "cfo", "executive", "resigns", "resigned", "appointed"],
@@ -551,6 +561,28 @@ def news_intelligence(news, ticker="", info=None):
         negative = sum(w for p, w in negative_phrases.items() if p in analysis_text)
         positive += sum(w for token, w in positive_words.items() if token in words)
         negative += sum(w for token, w in negative_words.items() if token in words)
+        # Generic words such as "buy" can refer to a competitor. Only score
+        # recommendations when the action is explicitly aimed at this ticker.
+        if target_aliases:
+            target_buy = re.search(
+                rf"\b(?:buy|own|accumulate)\b.{{0,24}}(?<!\w){target_pattern}(?!\w)",
+                lowtitle,
+            )
+            target_rejection = re.search(
+                rf"\b(?:forget|avoid|sell|dump|skip|ditch)\b.{{0,24}}(?<!\w){target_pattern}(?!\w)",
+                lowtitle,
+            )
+            redirect_to_rivals = re.search(
+                rf"\b(?:forget|avoid|sell|skip|ditch)\b.{{0,24}}(?<!\w){target_pattern}(?!\w)"
+                rf".{{0,50}}\b(?:buy|own)\b",
+                lowtitle,
+            )
+            if target_buy:
+                positive += 3
+            if target_rejection:
+                negative += 5
+            if redirect_to_rivals:
+                negative += 1
         if positive_percent.search(analysis_text):
             positive += 4
         if negative_percent.search(analysis_text):
@@ -559,9 +591,14 @@ def news_intelligence(news, ticker="", info=None):
         sentiment = "🟢 Positive" if score >= 15 else "🔴 Negative" if score <= -15 else "🟡 Neutral"
 
         event_type = "General"
-        for event, keywords in event_words.items():
-            if any(contains_term(analysis_text, word) for word in keywords):
-                event_type = event
+        # The headline expresses the article's main subject. Use the summary
+        # only when the headline itself contains no recognizable event.
+        for event_text in (lowtitle, analysis_text):
+            for event, keywords in event_words.items():
+                if any(contains_term(event_text, word) for word in keywords):
+                    event_type = event
+                    break
+            if event_type != "General":
                 break
         matched_risks = [
             (points, label)
