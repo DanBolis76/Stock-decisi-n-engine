@@ -621,7 +621,9 @@ if page=="Stock Analyzer":
             "outperform": 4,
             "approval": 3, "approved": 3,
             "partnership": 2,
-            "launch": 1
+            "launch": 1,
+            "higher": 2, "rises": 2, "rise": 2,
+            "gains": 2, "gain": 2
         }
 
         negative_words = {
@@ -639,7 +641,32 @@ if page=="Stock Analyzer":
             "underperform": 4,
             "investigation": 4,
             "recall": 4,
-            "layoffs": 3
+            "layoffs": 3,
+            "lower": 2, "slips": 2, "declines": 2
+        }
+
+        positive_phrases = {
+            "beats estimates": 5,
+            "raises guidance": 5,
+            "record revenue": 4,
+            "price target raised": 4,
+            "analyst upgrade": 4,
+            "wins contract": 4,
+            "share buyback": 3,
+            "shrinking share count": 3,
+            "regulatory approval": 4,
+        }
+
+        negative_phrases = {
+            "misses estimates": 5,
+            "cuts guidance": 5,
+            "lowers guidance": 5,
+            "price target cut": 4,
+            "analyst downgrade": 4,
+            "sec investigation": 5,
+            "class action lawsuit": 4,
+            "data breach": 5,
+            "product recall": 5,
         }
 
         event_words = {
@@ -714,6 +741,12 @@ if page=="Stock Analyzer":
                 or "Sin título"
             )
 
+            summary = (
+                content.get("summary")
+                or n.get("summary")
+                or ""
+            )
+
             publisher = (
                 content.get("provider", {}).get("displayName")
                 or n.get("publisher")
@@ -760,31 +793,58 @@ if page=="Stock Analyzer":
             else:
                 relevance = "🚫 IRRELEVANT"
                 relevance_weight = 0.0
+
+            # Do not display unrelated Yahoo Finance stories for other companies.
+            if relevance_weight == 0:
+                continue
+
+            analysis_text = f"{title} {title} {summary}".lower()
+            words = set(
+                analysis_text.replace(",", " ")
+                    .replace(".", " ")
+                    .replace(":", " ")
+                    .replace(";", " ")
+                    .replace("(", " ")
+                    .replace(")", " ")
+                    .split()
+            )
+
             positive_score = sum(
                 weight
                 for word, weight in positive_words.items()
-                if word in lowtitle
+                if word in words
             )
 
             negative_score = sum(
                 weight
                 for word, weight in negative_words.items()
-                if word in lowtitle
+                if word in words
+            )
+
+            positive_score += sum(
+                weight
+                for phrase, weight in positive_phrases.items()
+                if phrase in analysis_text
+            )
+
+            negative_score += sum(
+                weight
+                for phrase, weight in negative_phrases.items()
+                if phrase in analysis_text
             )
 
             raw_score = positive_score - negative_score
 
             sentiment_score = max(
                 -100,
-                min(100, raw_score * 20 * relevance_weight)
+                min(100, raw_score * 12 * relevance_weight)
             )
 
-            if relevance_weight > 0:
-                relevant_headlines += 1
+            relevant_headlines += 1
 
-            if sentiment_score >= 20:
+            if sentiment_score >= 15:
                 sentiment = "🟢 Positive"
-            elif sentiment_score <= -20:
+            elif sentiment_score <= -15:
                 sentiment = "🔴 Negative"
             else:
                 sentiment = "🟡 Neutral"
