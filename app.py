@@ -101,8 +101,8 @@ def plan(t, fs, rs):
     exit_score = clamp(
         (20 if p < sma20 else 0)
         + (25 if p < sma50 else 0)
-        + (20 if num(t["rsi"]) > 70 else 0)
-        + (15 if num(t["macd"]) < num(t["signal"]) else 0)
+        + (20 if num(t["rrsi"]) > 70 else 0)
+        + (15 if num(t["macd"]) < num(t["sig"]) else 0)
         + (20 if rs > 70 else 0)
     )
 
@@ -183,7 +183,7 @@ if page=="Stock Analyzer":
     q1,q2,q3,q4=st.columns(4); q1.metric("Price",f"${t['p']:.2f}"); q2.metric("Entry Zone",f"${lo:.2f}–${hi:.2f}"); q3.metric("Stop",f"${stop:.2f}"); q4.metric("Target 1",f"${t1:.2f}")
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
     with tabs[0]:
-        st.dataframe(pd.DataFrame({"Indicator":["SMA20","SMA50","SMA200","RSI14","MACD","Signal","Support","Resistance","Relative Volume"],"Value":[t["sma20"],t["sma50"],t["sma200"],t["rsi"],t["macd"],t["sig"],t["sup"],t["res"],t["rel"]]}),hide_index=True,use_container_width=True)
+        st.dataframe(pd.DataFrame({"Indicator":["SMA20","SMA50","SMA200","RSI14","MACD","Signal","Support","Resistance","Relative Volume"],"Value":[t["sma20"],t["sma50"],t["sma200"],t["rrsi"],float(t["macd"].iloc[-1]),float(t["sig"].iloc[-1]),t["sup"],t["res"],t["rel"]]}),hide_index=True,use_container_width=True)
     with tabs[1]:
         st.metric("Fundamental Score",f"{fs:.0f}/100")
         st.dataframe(pd.DataFrame({"Metric":list(fv.keys()),"Value":list(fv.values())}),hide_index=True,use_container_width=True)
