@@ -69,12 +69,12 @@ def risk(t,info):
     s += 8 if t["rel"]<.5 else 0
     if info.get("totalDebt") and info.get("totalCash") and info["totalDebt"]>info["totalCash"]: s+=10
     return clamp(s)
-def analyze_news(news, ticker=""):
+def analyze_news(news, ticker="", info=None):
     """
     Analyze recent headlines.
 
     Returns:
-        news_score: -100 to +100
+        news_score: analyze_news()
         news_risk:   0 to 100
     """
 
@@ -232,20 +232,54 @@ def analyze_news(news, ticker=""):
         text = f"{title} {title} {summary}".lower().strip()
         # --------------------------------
         # Relevance filter
-        # --------------------------------
         ticker_lower = ticker.lower().strip()
 
-        # Check whether the ticker appears in the story.
-        ticker_relevant = (
-            ticker_lower
-            and ticker_lower in text
+        info = info or {}
+
+        company_names = [
+            info.get("shortName", ""),
+            info.get("longName", ""),
+        ]
+
+        # Clean company names and create useful search terms
+        company_terms = []
+
+        for name in company_names:
+            if name:
+                name_lower = str(name).lower().strip()
+                company_terms.append(name_lower)
+
+                # Also use the main part of the company name
+                for ending in [
+                    " inc.",
+                    " inc",
+                    " corporation",
+                    " corp.",
+                    " corp",
+                    " ltd.",
+                    " ltd",
+                    " plc",
+                ]:
+                    if name_lower.endswith(ending):
+                        company_terms.append(
+                            name_lower[:-len(ending)].strip()
+                        )
+
+        ticker_relevant = bool(
+            (ticker_lower and ticker_lower in text)
+            or any(
+                term and term in text
+                for term in company_terms
+            )
         )
-
-        # Stories that explicitly mention the ticker receive full weight.
-        # Other stories are kept, but receive much less influence because
-        # Yahoo may return sector/market stories related only indirectly.
-        relevance_weight = 1.0 if ticker_relevant else 0.25
-
+        if ticker_relevant:
+            relevance = "🎯 DIRECT"
+            relevance_weight = 1.0
+        else:
+            relevance = "🚫 IRRELEVANT"
+            relevance_weight = 0.0
+        # Only company-specific stories affect sentiment.
+        
         positive = 0
         negative = 0
 
@@ -385,7 +419,7 @@ def analyze(ticker, period="2y"):
     fs, fv = fundamentals(i)
     rs = risk(t, i)
 
-    news_score, news_risk = analyze_news(n, ticker)
+    news_score, news_risk = analyze_news(n, ticker, i)
 
     vals = plan(
         t,
