@@ -70,14 +70,43 @@ def risk(t,info):
     if info.get("totalDebt") and info.get("totalCash") and info["totalDebt"]>info["totalCash"]: s+=10
     return clamp(s)
 
-def plan(t,fs,rs):
-    p,atr,sup,res=t["p"],t["atr"],t["sup"],t["res"]
-    lo=max(sup,p-1.5*atr); hi=min(p,p+.25*atr)
-    stop=min(sup-.5*atr,p-2*atr); t1=max(res,p+2*atr); t2=p+3.5*atr
-    rr=(t1-p)/(p-stop) if p>stop else 0
-    entry=clamp(.55*t["technical"]+.15*fs+.30*(100-rs))
-    exit=clamp((20 if p<t["sma20"] else 0)+(25 if p<t["sma50"] else 0)+(25 if t["macd"]<t["sig"] else 0)+(20 if t["rsi"]>75 else 0))
-    return entry,exit,lo,hi,stop,t1,t2,rr
+def plan(t, fs, rs):
+    def num(x):
+        if hasattr(x, "iloc"):
+            x = x.iloc[-1]
+        return float(x)
+
+    p = num(t["p"])
+    atr = num(t["atr"])
+    sup = num(t["sup"])
+    res = num(t["res"])
+    sma20 = num(t["sma20"])
+    sma50 = num(t["sma50"])
+
+    lo = max(sup, p - 1.5 * atr)
+    hi = min(p, p + 0.25 * atr)
+
+    stop = min(sup - 0.5 * atr, p - 2 * atr)
+    t1 = max(res, p + 2 * atr)
+    t2 = p + 3 * atr
+
+    rr = (t1 - p) / (p - stop) if p > stop else 0
+
+    entry = clamp(
+        0.55 * num(t["technical"])
+        + 0.15 * fs
+        + 0.30 * (100 - rs)
+    )
+
+    exit_score = clamp(
+        (20 if p < sma20 else 0)
+        + (25 if p < sma50 else 0)
+        + (20 if num(t["rsi"]) > 70 else 0)
+        + (15 if num(t["macd"]) < num(t["signal"]) else 0)
+        + (20 if rs > 70 else 0)
+    )
+
+    return entry, exit_score, lo, hi, stop, t1, t2, rr
 
 @st.cache_data(ttl=300)
 def get_data(ticker,period="2y"):
