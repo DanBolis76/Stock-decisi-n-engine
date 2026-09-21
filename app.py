@@ -429,6 +429,11 @@ def _legacy_analyze_news(news, ticker="", info=None):
 
 def news_intelligence(news, ticker="", info=None):
     """Return one consistent analysis used by both calculations and UI."""
+    def contains_term(text, term):
+        if " " in term:
+            return term in text
+        return re.search(rf"\b{re.escape(term)}\b", text) is not None
+
     info = info or {}
     ticker_lower = ticker.lower().strip()
     company_keywords = {
@@ -555,10 +560,14 @@ def news_intelligence(news, ticker="", info=None):
 
         event_type = "General"
         for event, keywords in event_words.items():
-            if any(word in analysis_text for word in keywords):
+            if any(contains_term(analysis_text, word) for word in keywords):
                 event_type = event
                 break
-        matched_risks = [(points, label) for phrase, (points, label) in risk_events.items() if phrase in analysis_text]
+        matched_risks = [
+            (points, label)
+            for phrase, (points, label) in risk_events.items()
+            if contains_term(analysis_text, phrase)
+        ]
         event_risk, risk_reason = max(matched_risks, default=(0, "No risk event detected"))
         impact = "HIGH" if event_risk >= 20 or abs(score) >= 60 else "MEDIUM" if event_risk >= 10 or abs(score) >= 30 else "LOW"
         explanation = f"{positive} positive vs {negative} negative signal points"
