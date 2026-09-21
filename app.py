@@ -217,13 +217,92 @@ if page=="Stock Analyzer":
         st.metric("Fundamental Score",f"{fs:.0f}/100")
         st.dataframe(pd.DataFrame({"Metric":list(fv.keys()),"Value":list(fv.values())}),hide_index=True,use_container_width=True)
     with tabs[2]:
-        pos=neg=0
-        positive_words=["beat","growth","upgrade","surge","record","strong","buy","raises","positive","profit"]
-        negative_words=["miss","downgrade","fall","drop","lawsuit","cut","weak","loss","negative","warning"]
+        st.subheader("News Intelligence")
+
+        positive_words = {
+            "beat": 3,
+            "beats": 3,
+            "growth": 2,
+            "upgrade": 4,
+            "upgraded": 4,
+            "surge": 3,
+            "record": 2,
+            "strong": 2,
+            "buy": 3,
+            "raises": 3,
+            "raised": 3,
+            "profit": 2,
+            "profits": 2,
+            "bullish": 3,
+            "outperform": 4,
+            "approval": 3,
+            "approved": 3,
+            "partnership": 2,
+            "launch": 1,
+        }
+
+        negative_words = {
+            "miss": 3,
+            "misses": 3,
+            "downgrade": 4,
+            "downgraded": 4,
+            "fall": 2,
+            "falls": 2,
+            "drop": 2,
+            "drops": 2,
+            "lawsuit": 4,
+            "cut": 3,
+            "cuts": 3,
+            "weak": 2,
+            "loss": 3,
+            "losses": 3,
+            "negative": 2,
+            "warning": 3,
+            "bearish": 3,
+            "underperform": 4,
+            "investigation": 4,
+            "recall": 4,
+            "layoffs": 3,
+        }
+
+        event_words = {
+            "Earnings": [
+                "earnings", "revenue", "eps", "quarter",
+                "guidance", "profit"
+            ],
+            "Analyst Rating": [
+                "upgrade", "downgrade", "price target",
+                "outperform", "underperform", "rating"
+            ],
+            "Management": [
+                "ceo", "cfo", "executive", "resigns",
+                "resigned", "appointed"
+            ],
+            "Product": [
+                "launch", "iphone", "product",
+                "release", "unveils"
+            ],
+            "Legal/Regulatory": [
+                "lawsuit", "investigation", "regulator",
+                "antitrust", "sec", "doj"
+            ],
+            "M&A": [
+                "acquisition", "acquire", "merger",
+                "buyout", "takeover"
+            ],
+        }
+
+        total_score = 0
+        articles_analyzed = 0
+
         for n in (news or [])[:15]:
             content = n.get("content", n)
 
-            title = content.get("title") or n.get("title") or "Sin título"
+            title = (
+                content.get("title")
+                or n.get("title")
+                or "Sin titulo"
+            )
 
             publisher = (
                 content.get("provider", {}).get("displayName")
@@ -239,21 +318,100 @@ if page=="Stock Analyzer":
 
             lowtitle = title.lower()
 
-            p = sum(w in lowtitle for w in positive_words)
-            ng = sum(w in lowtitle for w in negative_words)
+            positive_score = sum(
+                weight
+                for word, weight in positive_words.items()
+                if word in lowtitle
+            )
 
-            label = "🟢 Positive" if p > ng else "🔴 Negative" if ng > p else "🟡 Neutral"
+            negative_score = sum(
+                weight
+                for word, weight in negative_words.items()
+                if word in lowtitle
+            )
 
-            pos += p
-            neg += ng
+            raw_score = positive_score - negative_score
 
-            st.markdown(f"**{label} — {title}**")
-            st.caption(publisher)
+            if raw_score > 0:
+                sentiment = "🟢 Positive"
+            elif raw_score < 0:
+                sentiment = "🔴 Negative"
+            else:
+                sentiment = "🟡 Neutral"
+
+            event_type = "General"
+
+            for event, keywords in event_words.items():
+                if any(word in lowtitle for word in keywords):
+                    event_type = event
+                    break
+
+            high_impact_words = [
+                "earnings",
+                "guidance",
+                "ceo",
+                "cfo",
+                "acquisition",
+                "merger",
+                "lawsuit",
+                "investigation",
+                "downgrade",
+                "upgrade",
+                "recall",
+            ]
+
+            medium_impact_words = [
+                "launch",
+                "product",
+                "price target",
+                "partnership",
+                "revenue",
+                "profit",
+            ]
+
+            if any(word in lowtitle for word in high_impact_words):
+                impact = "HIGH"
+            elif any(word in lowtitle for word in medium_impact_words):
+                impact = "MEDIUM"
+            else:
+                impact = "LOW"
+
+            sentiment_score = max(
+                -100,
+                min(100, raw_score * 20)
+            )
+
+            total_score += sentiment_score
+            articles_analyzed += 1
+
+            st.markdown(f"### {sentiment} — {title}")
+
+            st.caption(
+                f"{publisher} | Event: {event_type} | "
+                f"Impact: {impact} | Score: {sentiment_score:+d}"
+            )
 
             if link:
                 st.markdown(f"[Open article]({link})")
-        st.metric("Headline Sentiment (simple V1)",f"{pos-neg:+d}")
-        st.caption("V1 sentiment is keyword-based; a production version should use a dedicated NLP/news API.")
+
+            st.divider()
+
+        if articles_analyzed:
+            average_sentiment = round(
+                total_score / articles_analyzed
+            )
+        else:
+            average_sentiment = 0
+
+        st.metric(
+            "Overall News Sentiment",
+            f"{average_sentiment:+d}/100"
+        )
+
+        st.caption(
+            f"Based on {articles_analyzed} recent headlines. "
+            "V2 uses weighted headline analysis and event detection."
+        )
     with tabs[3]:
         st.write({"Entry Zone":f"${lo:.2f}–${hi:.2f}","Stop":f"${stop:.2f}","Target 1":f"${t1:.2f}","Target 2":f"${t2:.2f}","Risk/Reward":f"1:{rr:.1f}"})
 
