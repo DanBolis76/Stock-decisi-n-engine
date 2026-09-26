@@ -924,6 +924,18 @@ def scanner(tickers, min_entry, max_risk, min_price=5.0, min_avg_volume=500_000)
         except Exception: pass
     return pd.DataFrame(rows).sort_values(["Entry Score","R/R"],ascending=False) if rows else pd.DataFrame()
 
+
+@st.cache_data(ttl=300)
+def get_most_active_tickers(count=15):
+    """Return today's most-active US symbols from Yahoo Finance."""
+    response = yf.screen("most_actives", count=count)
+    quotes = response.get("quotes", []) if isinstance(response, dict) else []
+    return list(dict.fromkeys(
+        quote.get("symbol", "").strip().upper()
+        for quote in quotes
+        if isinstance(quote, dict) and quote.get("symbol")
+    ))
+
 # ----------------------------
 # Backtest (rule-based prototype)
 # ----------------------------
@@ -1098,23 +1110,30 @@ elif page=="Scanner":
     core_tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "AMD", "QQQ", "SPY"]
     scanner_mode = st.radio(
         "Scanner universe",
-        ["Core + My Watchlist", "Core list", "My Watchlist"],
+        ["Core + My Watchlist", "Most Active Today", "Core list", "My Watchlist"],
         horizontal=True,
     )
     watchlist_text = st.text_area(
         "My watchlist (comma separated)",
         "COST,JPM,LLY,UNH",
-        disabled=scanner_mode == "Core list",
+        disabled=scanner_mode in ("Core list", "Most Active Today"),
     )
     watchlist = [sym.strip().upper() for sym in watchlist_text.split(",") if sym.strip()]
     if scanner_mode == "Core list":
         universe = core_tickers
     elif scanner_mode == "My Watchlist":
         universe = watchlist
+    elif scanner_mode == "Most Active Today":
+        universe = []
     else:
         universe = core_tickers + watchlist
 
-    st.caption(f"Scanning {len(set(universe))} unique symbols. Duplicates are removed automatically.")
+    if scanner_mode == "Most Active Today":
+        active_count = st.slider("Number of most-active stocks", 5, 25, 15, 5)
+        st.caption("The list is refreshed from Yahoo Finance every 5 minutes and then evaluated with the filters below.")
+    else:
+        active_count = 15
+        st.caption(f"Scanning {len(set(universe))} unique symbols. Duplicates are removed automatically.")
     f1, f2 = st.columns(2)
     min_entry = f1.slider("Minimum Entry Score", 0, 90, 50)
     max_risk = f2.slider("Maximum Risk Score", 20, 100, 60)
@@ -1122,6 +1141,14 @@ elif page=="Scanner":
     min_price = q1.number_input("Minimum price ($)", min_value=0.0, value=5.0, step=1.0)
     min_avg_volume = q2.number_input("Minimum 20-day average volume", min_value=0, value=500_000, step=100_000)
     if st.button("Run Scanner",type="primary"):
+        if scanner_mode == "Most Active Today":
+            try:
+                universe = get_most_active_tickers(active_count)
+            except Exception as exc:
+                universe = []
+                st.error(f"The most-active list is temporarily unavailable: {exc}")
+            if universe:
+                st.caption("Most active symbols: " + ", ".join(universe))
         with st.spinner("Analyzing universe…"):
             df=scanner(universe,min_entry,max_risk,min_price,min_avg_volume)
         if df.empty:
