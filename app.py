@@ -892,16 +892,35 @@ def analyze(ticker, period="2y"):
 # ----------------------------
 # Scanner
 # ----------------------------
-def scanner(tickers, min_entry, max_risk):
+def scanner(tickers, min_entry, max_risk, min_price=5.0, min_avg_volume=500_000):
     rows=[]
-    for sym in tickers:
+    clean_tickers = list(dict.fromkeys(sym.strip().upper() for sym in tickers if sym.strip()))
+    for sym in clean_tickers:
         try:
-            a=analyze(sym.strip().upper(),"1y")
+            a=analyze(sym,"1y")
             if not a: continue
             h, i, n, t, fs, fv, rs, v, news_score, news_risk = a
-            if v[0]>=min_entry and rs<=max_risk:
-                rows.append({"Ticker":sym.upper(),"Price":t["p"],"Entry Score":round(v[0]),"Exit Score":round(v[1]),"Risk":round(rs),
-                             "Entry Low":v[2],"Entry High":v[3],"Stop":v[4],"Target 1":v[5],"R/R":round(v[7],2)})
+            close = h["Close"].dropna()
+            avg_volume = float(h["Volume"].tail(20).mean())
+            day_change = float((close.iloc[-1] / close.iloc[-2] - 1) * 100) if len(close) > 1 else 0.0
+            rel_volume = float(h["Volume"].iloc[-1] / avg_volume) if avg_volume > 0 else 0.0
+            if (
+                v[0] >= min_entry
+                and rs <= max_risk
+                and t["p"] >= min_price
+                and avg_volume >= min_avg_volume
+            ):
+                rows.append({
+                    "Ticker": sym,
+                    "Price": round(t["p"], 2),
+                    "Day %": round(day_change, 2),
+                    "Rel Volume": round(rel_volume, 2),
+                    "Entry Score": round(v[0]),
+                    "Risk": round(rs),
+                    "R/R": round(v[7], 2),
+                    "Exit Score": round(v[1]),
+                    "News": round(news_score),
+                })
         except Exception: pass
     return pd.DataFrame(rows).sort_values(["Entry Score","R/R"],ascending=False) if rows else pd.DataFrame()
 
@@ -1076,14 +1095,51 @@ if page=="Stock Analyzer":
 
 elif page=="Scanner":
     st.header("🔎 Opportunity Scanner")
-    universe=st.text_area("Tickers (comma separated)","AAPL,MSFT,NVDA,AMZN,GOOGL,META,AVGO,TSLA,AMD,QQQ,SPY")
-    min_entry=st.slider("Minimum Entry Score",50,90,70)
-    max_risk=st.slider("Maximum Risk Score",20,90,50)
+    core_tickers = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "AMD", "QQQ", "SPY"]
+    scanner_mode = st.radio(
+        "Scanner universe",
+        ["Core + My Watchlist", "Core list", "My Watchlist"],
+        horizontal=True,
+    )
+    watchlist_text = st.text_area(
+        "My watchlist (comma separated)",
+        "COST,JPM,LLY,UNH",
+        disabled=scanner_mode == "Core list",
+    )
+    watchlist = [sym.strip().upper() for sym in watchlist_text.split(",") if sym.strip()]
+    if scanner_mode == "Core list":
+        universe = core_tickers
+    elif scanner_mode == "My Watchlist":
+        universe = watchlist
+    else:
+        universe = core_tickers + watchlist
+
+    st.caption(f"Scanning {len(set(universe))} unique symbols. Duplicates are removed automatically.")
+    f1, f2 = st.columns(2)
+    min_entry = f1.slider("Minimum Entry Score", 0, 90, 50)
+    max_risk = f2.slider("Maximum Risk Score", 20, 100, 60)
+    q1, q2 = st.columns(2)
+    min_price = q1.number_input("Minimum price ($)", min_value=0.0, value=5.0, step=1.0)
+    min_avg_volume = q2.number_input("Minimum 20-day average volume", min_value=0, value=500_000, step=100_000)
     if st.button("Run Scanner",type="primary"):
         with st.spinner("Analyzing universe…"):
-            df=scanner(universe.split(","),min_entry,max_risk)
-        st.dataframe(df,hide_index=True,use_container_width=True)
-        st.download_button("Download CSV",df.to_csv(index=False),"scanner_results.csv","text/csv")
+            df=scanner(universe,min_entry,max_risk,min_price,min_avg_volume)
+        if df.empty:
+            st.info("No stocks matched every filter. Try lowering Entry Score or increasing Maximum Risk.")
+        else:
+            st.success(f"{len(df)} opportunities matched all filters.")
+            st.dataframe(
+                df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Price": st.column_config.NumberColumn(format="$%.2f"),
+                    "Day %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Rel Volume": st.column_config.NumberColumn(format="%.2fx"),
+                    "R/R": st.column_config.NumberColumn(format="1 : %.2f"),
+                },
+            )
+            st.download_button("Download CSV",df.to_csv(index=False),"scanner_results.csv","text/csv")
 
 elif page=="Backtest":
     st.header("🧪 Backtest")
