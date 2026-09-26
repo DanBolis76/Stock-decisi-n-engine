@@ -128,7 +128,10 @@ def price_chart(hist, chart_type="Candlestick + Volume", display_period="6 Month
         legend={"orientation": "h", "y": 1.02, "x": 0},
         xaxis_rangeslider_visible=False,
     )
-    fig.update_yaxes(title_text="Price ($)", row=1, col=1) if with_volume else fig.update_yaxes(title_text="Price ($)")
+    if with_volume:
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    else:
+        fig.update_yaxes(title_text="Price ($)")
     return fig
 
 def rsi(close, period=14):
