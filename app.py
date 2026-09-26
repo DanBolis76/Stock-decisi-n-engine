@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Stock Analyzer V1+", page_icon="📈", layout="wide")
 
@@ -13,6 +15,120 @@ st.set_page_config(page_title="Stock Analyzer V1+", page_icon="📈", layout="wi
 # ----------------------------
 def clamp(x, lo=0, hi=100):
     return max(lo, min(hi, float(x)))
+
+def price_chart(hist, chart_type="Candlestick + Volume", display_period="6 Months", overlays=None):
+    """Build an interactive price chart without changing analysis inputs."""
+    overlays = overlays or []
+    days = {
+        "1 Month": 31,
+        "3 Months": 93,
+        "6 Months": 186,
+        "1 Year": 366,
+        "2 Years": 732,
+    }
+    chart_data = hist.copy().dropna(subset=["Open", "High", "Low", "Close"])
+    if chart_data.empty:
+        return go.Figure()
+    cutoff = chart_data.index.max() - pd.Timedelta(days=days[display_period])
+    chart_data = chart_data.loc[chart_data.index >= cutoff].copy()
+
+    with_volume = chart_type == "Candlestick + Volume"
+    if with_volume:
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            row_heights=[0.76, 0.24],
+        )
+        price_row = 1
+    else:
+        fig = go.Figure()
+        price_row = None
+
+    trace_args = {"row": price_row, "col": 1} if with_volume else {}
+    if chart_type in ("Candlestick", "Candlestick + Volume"):
+        fig.add_trace(
+            go.Candlestick(
+                x=chart_data.index,
+                open=chart_data["Open"],
+                high=chart_data["High"],
+                low=chart_data["Low"],
+                close=chart_data["Close"],
+                name="OHLC",
+                increasing_line_color="#16a34a",
+                decreasing_line_color="#dc2626",
+            ),
+            **trace_args,
+        )
+    elif chart_type == "OHLC":
+        fig.add_trace(
+            go.Ohlc(
+                x=chart_data.index,
+                open=chart_data["Open"],
+                high=chart_data["High"],
+                low=chart_data["Low"],
+                close=chart_data["Close"],
+                name="OHLC",
+                increasing_line_color="#16a34a",
+                decreasing_line_color="#dc2626",
+            )
+        )
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data.index,
+                y=chart_data["Close"],
+                mode="lines",
+                name="Close",
+                line={"color": "#2563eb", "width": 2},
+                fill="tozeroy" if chart_type == "Area" else None,
+                fillcolor="rgba(37, 99, 235, 0.16)",
+            )
+        )
+
+    for window, color in [(20, "#f59e0b"), (50, "#8b5cf6")]:
+        label = f"SMA{window}"
+        if label in overlays:
+            fig.add_trace(
+                go.Scatter(
+                    x=chart_data.index,
+                    y=hist["Close"].rolling(window).mean().reindex(chart_data.index),
+                    mode="lines",
+                    name=label,
+                    line={"color": color, "width": 1.5},
+                ),
+                **trace_args,
+            )
+
+    if with_volume:
+        volume_colors = np.where(
+            chart_data["Close"] >= chart_data["Open"],
+            "rgba(22, 163, 74, 0.65)",
+            "rgba(220, 38, 38, 0.65)",
+        )
+        fig.add_trace(
+            go.Bar(
+                x=chart_data.index,
+                y=chart_data["Volume"].fillna(0),
+                marker_color=volume_colors,
+                name="Volume",
+            ),
+            row=2,
+            col=1,
+        )
+        fig.update_yaxes(title_text="Volume", row=2, col=1)
+
+    fig.update_layout(
+        height=620 if with_volume else 500,
+        margin={"l": 10, "r": 10, "t": 20, "b": 10},
+        hovermode="x unified",
+        dragmode="zoom",
+        legend={"orientation": "h", "y": 1.02, "x": 0},
+        xaxis_rangeslider_visible=False,
+    )
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1) if with_volume else fig.update_yaxes(title_text="Price ($)")
+    return fig
 
 def rsi(close, period=14):
     d = close.diff()
@@ -817,7 +933,25 @@ if page=="Stock Analyzer":
     entry,exit,lo,hi,stop,t1,t2,rr,score_details=v
     c1,c2,c3,c4=st.columns(4); c1.metric("Entry Score",f"{entry:.0f}/100"); c2.metric("Exit Score",f"{exit:.0f}/100"); c3.metric("Risk",f"{rs:.0f}/100"); c4.metric("R/R",f"1 : {rr:.1f}")
     st.subheader(f"{ticker} — {i.get('longName',ticker)}")
-    st.line_chart(h["Close"].tail(180))
+    chart_col, period_col, overlay_col = st.columns([1.4, 1, 1.2])
+    with chart_col:
+        chart_type = st.selectbox(
+            "Chart display",
+            ["Candlestick + Volume", "Candlestick", "OHLC", "Line", "Area"],
+        )
+    with period_col:
+        display_period = st.selectbox(
+            "Display period",
+            ["1 Month", "3 Months", "6 Months", "1 Year", "2 Years"],
+            index=2,
+        )
+    with overlay_col:
+        overlays = st.multiselect("Overlays", ["SMA20", "SMA50"], default=["SMA20"])
+    st.plotly_chart(
+        price_chart(h, chart_type, display_period, overlays),
+        width="stretch",
+        config={"displaylogo": False, "scrollZoom": True},
+    )
     q1,q2,q3,q4=st.columns(4); q1.metric("Price",f"${t['p']:.2f}"); q2.metric("Entry Zone",f"${lo:.2f}–${hi:.2f}"); q3.metric("Stop",f"${stop:.2f}"); q4.metric("Target 1",f"${t1:.2f}")
     n1, n2 = st.columns(2)
 
