@@ -20,6 +20,7 @@ def price_chart(hist, chart_type="Candlestick + Volume", display_period="6 Month
     """Build an interactive price chart without changing analysis inputs."""
     overlays = overlays or []
     days = {
+        "1 Day (5m)": 1,
         "1 Month": 31,
         "3 Months": 93,
         "6 Months": 186,
@@ -848,6 +849,16 @@ def get_data(ticker,period="2y"):
     tk=yf.Ticker(ticker)
     return tk.history(period=period,auto_adjust=False), tk.info, tk.news
 
+@st.cache_data(ttl=60)
+def get_intraday_data(ticker):
+    """Return the latest trading session in five-minute intervals."""
+    return yf.Ticker(ticker).history(
+        period="1d",
+        interval="5m",
+        auto_adjust=False,
+        prepost=False,
+    )
+
 def analyze(ticker, period="2y"):
     h, i, n = get_data(ticker, period)
 
@@ -942,13 +953,18 @@ if page=="Stock Analyzer":
     with period_col:
         display_period = st.selectbox(
             "Display period",
-            ["1 Month", "3 Months", "6 Months", "1 Year", "2 Years"],
-            index=2,
+            ["1 Day (5m)", "1 Month", "3 Months", "6 Months", "1 Year", "2 Years"],
+            index=3,
         )
     with overlay_col:
         overlays = st.multiselect("Overlays", ["SMA20", "SMA50"], default=["SMA20"])
+    chart_history = get_intraday_data(ticker) if display_period == "1 Day (5m)" else h
+    if chart_history.empty:
+        st.warning("Intraday data is unavailable right now. Showing the daily chart instead.")
+        chart_history = h
+        display_period = "1 Month"
     st.plotly_chart(
-        price_chart(h, chart_type, display_period, overlays),
+        price_chart(chart_history, chart_type, display_period, overlays),
         width="stretch",
         config={"displaylogo": False, "scrollZoom": True},
     )
