@@ -474,6 +474,7 @@ def news_intelligence(news, ticker="", info=None):
     positive_phrases = {
         "beats estimates": 5, "raises guidance": 5, "record revenue": 4,
         "price target raised": 4, "analyst upgrade": 4, "wins contract": 4,
+        "wins major contract": 4, "fda approves": 5, "fda approval": 5,
         "share buyback": 3, "shrinking share count": 3,
         "regulatory approval": 4, "strong demand": 4,
     }
@@ -482,6 +483,8 @@ def news_intelligence(news, ticker="", info=None):
         "price target cut": 4, "analyst downgrade": 4,
         "sec investigation": 5, "class action lawsuit": 4,
         "data breach": 5, "product recall": 5, "profit warning": 5,
+        "export restriction": 4, "export restrictions": 4,
+        "export ban": 5,
     }
     positive_words = {
         "beat": 3, "beats": 3, "growth": 2, "upgrade": 4, "upgraded": 4,
@@ -490,7 +493,7 @@ def news_intelligence(news, ticker="", info=None):
         "bullish": 3, "outperform": 4, "approval": 3, "approved": 3,
         "partnership": 2, "launch": 1, "higher": 2, "rises": 2,
         "rise": 2, "gains": 2, "gain": 2, "boosting": 2, "jumps": 3,
-        "rallies": 3,
+        "rallies": 3, "approves": 3,
     }
     negative_words = {
         "miss": 3, "misses": 3, "downgrade": 4, "downgraded": 4,
@@ -498,25 +501,36 @@ def news_intelligence(news, ticker="", info=None):
         "cut": 3, "cuts": 3, "weak": 2, "loss": 3, "losses": 3,
         "warning": 3, "bearish": 3, "underperform": 4,
         "investigation": 4, "recall": 4, "layoffs": 3, "lower": 2,
-        "slips": 2, "declines": 2, "plunges": 4,
+        "slips": 2, "declines": 2, "plunges": 4, "recalled": 5,
+        "withdrawn": 4, "restriction": 3, "restrictions": 3,
+        "sanctions": 4, "ban": 4, "banned": 4,
     }
     event_words = {
         "Geopolitical/Policy": [
             "trump", "xi", "white house", "congress", "china", "tariff",
-            "trade restriction", "export control", "sanction", "war",
+            "trade restriction", "trade restrictions", "export control",
+            "export controls", "export restriction", "export restrictions",
+            "sanction", "sanctions", "export ban", "war",
         ],
         "Earnings": ["earnings", "revenue", "eps", "quarter", "guidance", "profit"],
         "Analyst Rating": ["upgrade", "downgrade", "price target", "outperform", "underperform", "rating"],
         "Management": ["ceo", "cfo", "executive", "resigns", "resigned", "appointed"],
-        "Product": ["launch", "iphone", "product", "release", "unveils"],
-        "Legal/Regulatory": ["lawsuit", "investigation", "regulator", "antitrust", "sec", "doj"],
+        "Product": ["launch", "iphone", "product", "release", "unveils", "recall", "recalled"],
+        "Legal/Regulatory": [
+            "lawsuit", "investigation", "regulator", "antitrust", "sec",
+            "doj", "fda", "clinical trial",
+        ],
         "M&A": ["acquisition", "acquire", "merger", "buyout", "takeover"],
     }
     risk_events = {
         "bankruptcy": (50, "Bankruptcy"), "fraud": (40, "Fraud"),
         "accounting irregularities": (40, "Accounting"),
         "investigation": (25, "Investigation"), "data breach": (25, "Cybersecurity"),
-        "recall": (25, "Product recall"), "lawsuit": (20, "Legal"),
+        "recall": (25, "Product recall"), "recalled": (25, "Product recall"),
+        "export ban": (20, "Export restriction"),
+        "export restriction": (15, "Export restriction"),
+        "export restrictions": (15, "Export restriction"),
+        "lawsuit": (20, "Legal"),
         "antitrust": (20, "Regulatory"), "ceo resigns": (20, "Management"),
         "layoffs": (12, "Layoffs"), "acquisition": (10, "M&A"),
         "merger": (10, "M&A"), "guidance": (8, "Guidance"),
@@ -533,6 +547,7 @@ def news_intelligence(news, ticker="", info=None):
     )
 
     stories, total_score, total_weight, risk_scores = [], 0.0, 0.0, []
+    seen_titles = set()
     for index, item in enumerate((news or [])[:15]):
         content = item.get("content", item)
         if not isinstance(content, dict):
@@ -542,6 +557,10 @@ def news_intelligence(news, ticker="", info=None):
         if not title:
             continue
         lowtitle = title.lower()
+        normalized_title = re.sub(r"[^a-z0-9]+", " ", lowtitle).strip()
+        if normalized_title in seen_titles:
+            continue
+        seen_titles.add(normalized_title)
         analysis_text = f"{title} {title} {summary}".lower()
         is_direct = bool(
             (ticker_lower and ticker_lower in lowtitle)
@@ -632,7 +651,7 @@ def news_intelligence(news, ticker="", info=None):
 def analyze_news(news, ticker="", info=None):
     _, news_score, news_risk, _ = news_intelligence(news, ticker, info)
     return news_score, news_risk
-def plan(t, fs, rs, news_score=0, news_risk=0):
+def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY"):
     def num(x):
         if hasattr(x, "iloc"):
             x = x.iloc[-1]
@@ -654,10 +673,17 @@ def plan(t, fs, rs, news_score=0, news_risk=0):
 
     rr = (t1 - p) / (p - stop) if p > stop else 0
 
-    technical_component = 0.45 * num(t["technical"])
-    fundamental_component = 0.15 * fs
-    risk_component = 0.25 * (100 - rs)
-    news_component = 0.15 * ((news_score + 100) / 2)
+    is_etf = str(asset_type).upper() == "ETF"
+    if is_etf:
+        technical_component = 0.50 * num(t["technical"])
+        fundamental_component = 0.0
+        risk_component = 0.30 * (100 - rs)
+        news_component = 0.20 * ((news_score + 100) / 2)
+    else:
+        technical_component = 0.45 * num(t["technical"])
+        fundamental_component = 0.15 * fs
+        risk_component = 0.25 * (100 - rs)
+        news_component = 0.15 * ((news_score + 100) / 2)
     raw_entry = clamp(
         technical_component
         + fundamental_component
@@ -690,7 +716,7 @@ def plan(t, fs, rs, news_score=0, news_risk=0):
 
     score_details = {
         "Technical contribution": technical_component,
-        "Fundamental contribution": fundamental_component,
+        "Fundamental contribution (ETF: not used)" if is_etf else "Fundamental contribution": fundamental_component,
         "Risk contribution": risk_component,
         "News contribution": news_component,
         "Raw Entry Score": raw_entry,
@@ -727,7 +753,8 @@ def analyze(ticker, period="2y"):
         fs,
         rs,
         news_score,
-        news_risk
+        news_risk,
+        i.get("quoteType", "EQUITY"),
     )
 
     return h, i, n, t, fs, fv, rs, vals, news_score, news_risk
@@ -836,7 +863,10 @@ if page=="Stock Analyzer":
         use_container_width=True,
     )
     with tabs[1]:
-        st.metric("Fundamental Score",f"{fs:.0f}/100")
+        if str(i.get("quoteType", "")).upper() == "ETF":
+            st.info("ETF detected: corporate fundamentals are not used in the Entry Score.")
+        else:
+            st.metric("Fundamental Score",f"{fs:.0f}/100")
         st.dataframe(pd.DataFrame({"Metric":list(fv.keys()),"Value":list(fv.values())}),hide_index=True,use_container_width=True)
     with tabs[2]:
         st.subheader("News Intelligence")
