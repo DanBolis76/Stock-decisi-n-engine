@@ -212,25 +212,52 @@ def market_quality(hist, info):
             except (TypeError, ValueError, OSError):
                 pass
 
-    penalty = 0
+    def scaled_score(value, low, high, points):
+        if high <= low:
+            return 0.0
+        return points * clamp((value - low) / (high - low), 0, 1)
+
     warnings = []
     if market_cap and market_cap < 2_000_000_000:
-        penalty += 8
         warnings.append("Small-cap company (below $2B market value)")
     if avg_volume < 500_000 or dollar_volume < 10_000_000:
-        penalty += 10
         warnings.append("Low liquidity; execution may differ from the displayed price")
     if atr_pct >= 0.05:
-        penalty += 8
         warnings.append("High daily volatility (ATR at least 5% of price)")
     if gap95 >= 0.04:
-        penalty += 7
         warnings.append("Large recent overnight gaps")
     if earnings_days is not None and 0 <= earnings_days <= 7:
-        penalty += 12
         warnings.append(f"Earnings expected in {earnings_days} day(s)")
 
-    quality_score = clamp(100 - penalty)
+    # Continuous scores avoid an abrupt jump at a single threshold. Unknown
+    # market cap receives a neutral value; unknown earnings do not create an
+    # event-risk penalty because there is no verified nearby date.
+    volume_score = scaled_score(avg_volume, 100_000, 1_000_000, 15)
+    dollar_volume_score = scaled_score(dollar_volume, 2_000_000, 25_000_000, 15)
+    liquidity_score = volume_score + dollar_volume_score
+    volatility_score = 25 * (1 - clamp((atr_pct - 0.02) / 0.06, 0, 1))
+    gap_score = 20 * (1 - clamp((gap95 - 0.01) / 0.05, 0, 1))
+    size_score = (
+        scaled_score(market_cap, 500_000_000, 10_000_000_000, 10)
+        if market_cap
+        else 7.0
+    )
+    if earnings_days is None or earnings_days > 14:
+        earnings_score = 15.0
+    elif earnings_days < 0:
+        earnings_score = 15.0
+    else:
+        earnings_score = 15 * clamp(earnings_days / 14, 0, 1)
+
+    components = {
+        "Liquidity": liquidity_score,
+        "Volatility stability": volatility_score,
+        "Gap stability": gap_score,
+        "Company size": size_score,
+        "Earnings distance": earnings_score,
+    }
+    quality_score = clamp(sum(components.values()))
+    penalty = 100 - quality_score
     return {
         "avg_volume": avg_volume,
         "dollar_volume": dollar_volume,
@@ -241,6 +268,7 @@ def market_quality(hist, info):
         "earnings_days": earnings_days,
         "penalty": penalty,
         "quality_score": quality_score,
+        "components": components,
         "warnings": warnings,
     }
 
@@ -1237,6 +1265,20 @@ if page=="Stock Analyzer":
     m2.metric("ATR / Price", f"{quality['atr_pct']*100:.1f}%")
     m3.metric("95% Gap", f"{quality['gap95_pct']*100:.1f}%")
     m4.metric("Next Earnings", quality["earnings_date"].strftime("%b %d") if quality["earnings_date"] else "Unknown")
+    component_maximums = {
+        "Liquidity": 30,
+        "Volatility stability": 25,
+        "Gap stability": 20,
+        "Company size": 10,
+        "Earnings distance": 15,
+    }
+    st.caption(
+        "Market Quality breakdown: "
+        + " • ".join(
+            f"{name} {score:.1f}/{component_maximums[name]}"
+            for name, score in quality["components"].items()
+        )
+    )
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
     with tabs[0]:
                 technical_data = {
