@@ -1,4 +1,4 @@
-# Stock Analyzer V1+
+# Stock Analyzer V1.1
 Expanded prototype requested by the user.
 
 ## Added modules 1–6
@@ -8,6 +8,13 @@ Expanded prototype requested by the user.
 4. Fidelity CSV portfolio analyzer
 5. Alert-rule interface
 6. iPhone-friendly Streamlit web UI foundation
+
+## Risk-quality improvements
+- Validates that every long setup follows `Stop < Entry Zone < Target`.
+- Adds market-quality penalties for small capitalization, low liquidity, high ATR and large overnight gaps.
+- Flags earnings expected within seven days when Yahoo Finance supplies the date.
+- Shows a conservative gap-adjusted stop-fill estimate instead of implying that stops are guaranteed.
+- Adds multi-week backtest windows, configurable slippage, intraday high/low stop checks, maximum drawdown and SPY/buy-and-hold comparisons.
 
 ## Run
 pip install -r requirements.txt

@@ -8,7 +8,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Analyzer V1+", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Stock Analyzer V1.1", page_icon="📈", layout="wide")
 
 # ----------------------------
 # Core calculations
@@ -182,12 +182,73 @@ def fundamentals(info):
         s += 8 if vals["totalCash"]>vals["totalDebt"] else -8
     return clamp(s),vals
 
-def risk(t,info):
+def market_quality(hist, info):
+    """Estimate tradability and event risk from data available before a trade."""
+    close = hist["Close"].dropna()
+    volume = hist["Volume"].fillna(0)
+    avg_volume = float(volume.tail(20).mean()) if not volume.empty else 0.0
+    price = float(close.iloc[-1]) if not close.empty else 0.0
+    dollar_volume = avg_volume * price
+    market_cap = float(info.get("marketCap") or 0)
+    previous_close = close.shift(1)
+    gaps = ((hist["Open"] / previous_close) - 1).abs().dropna().tail(60)
+    gap95 = float(gaps.quantile(0.95)) if not gaps.empty else 0.0
+    atr_pct = float(
+        ((hist["High"] - hist["Low"]).rolling(14).mean().iloc[-1] / price)
+    ) if price else 0.0
+
+    earnings_date = None
+    earnings_days = None
+    for key in ("earningsTimestampStart", "earningsTimestamp", "earningsTimestampEnd"):
+        value = info.get(key)
+        if value:
+            try:
+                earnings_date = datetime.fromtimestamp(float(value), tz=timezone.utc)
+                earnings_days = (earnings_date.date() - datetime.now(timezone.utc).date()).days
+                break
+            except (TypeError, ValueError, OSError):
+                pass
+
+    penalty = 0
+    warnings = []
+    if market_cap and market_cap < 2_000_000_000:
+        penalty += 8
+        warnings.append("Small-cap company (below $2B market value)")
+    if avg_volume < 500_000 or dollar_volume < 10_000_000:
+        penalty += 10
+        warnings.append("Low liquidity; execution may differ from the displayed price")
+    if atr_pct >= 0.05:
+        penalty += 8
+        warnings.append("High daily volatility (ATR at least 5% of price)")
+    if gap95 >= 0.04:
+        penalty += 7
+        warnings.append("Large recent overnight gaps")
+    if earnings_days is not None and 0 <= earnings_days <= 7:
+        penalty += 12
+        warnings.append(f"Earnings expected in {earnings_days} day(s)")
+
+    quality_score = clamp(100 - penalty)
+    return {
+        "avg_volume": avg_volume,
+        "dollar_volume": dollar_volume,
+        "market_cap": market_cap,
+        "atr_pct": atr_pct,
+        "gap95_pct": gap95,
+        "earnings_date": earnings_date,
+        "earnings_days": earnings_days,
+        "penalty": penalty,
+        "quality_score": quality_score,
+        "warnings": warnings,
+    }
+
+
+def risk(t,info,quality=None):
     s=35; beta=info.get("beta")
     if beta is not None: s += 15 if beta>1.5 else 7 if beta>1.1 else -5
     atrpct=t["atr"]/t["p"]; s += 18 if atrpct>.05 else 8 if atrpct>.03 else 0
     s += 8 if t["rel"]<.5 else 0
     if info.get("totalDebt") and info.get("totalCash") and info["totalDebt"]>info["totalCash"]: s+=10
+    if quality: s += quality["penalty"]
     return clamp(s)
 def _legacy_analyze_news(news, ticker="", info=None):
     """
@@ -771,7 +832,7 @@ def news_intelligence(news, ticker="", info=None):
 def analyze_news(news, ticker="", info=None):
     _, news_score, news_risk, _ = news_intelligence(news, ticker, info)
     return news_score, news_risk
-def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY"):
+def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY", quality=None):
     def num(x):
         if hasattr(x, "iloc"):
             x = x.iloc[-1]
@@ -804,12 +865,14 @@ def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY"):
         fundamental_component = 0.15 * fs
         risk_component = 0.25 * (100 - rs)
         news_component = 0.15 * ((news_score + 100) / 2)
-    raw_entry = clamp(
+    quality_penalty = float((quality or {}).get("penalty", 0))
+    raw_entry_before_quality = clamp(
         technical_component
         + fundamental_component
         + risk_component
         + news_component
     )
+    raw_entry = clamp(raw_entry_before_quality - quality_penalty)
 
     if rr < 1:
         rr_multiplier, rr_label = 0.55, "Avoid"
@@ -839,6 +902,7 @@ def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY"):
         "Fundamental contribution (ETF: not used)" if is_etf else "Fundamental contribution": fundamental_component,
         "Risk contribution": risk_component,
         "News contribution": news_component,
+        "Market quality penalty": -quality_penalty,
         "Raw Entry Score": raw_entry,
         "R/R penalty": rr_penalty,
         "Final Entry Score": entry,
@@ -874,7 +938,8 @@ def analyze(ticker, period="2y"):
         return None
 
     fs, fv = fundamentals(i)
-    rs = risk(t, i)
+    quality = market_quality(h, i)
+    rs = risk(t, i, quality)
 
     news_score, news_risk = analyze_news(n, ticker, i)
 
@@ -885,9 +950,10 @@ def analyze(ticker, period="2y"):
         news_score,
         news_risk,
         i.get("quoteType", "EQUITY"),
+        quality,
     )
 
-    return h, i, n, t, fs, fv, rs, vals, news_score, news_risk
+    return h, i, n, t, fs, fv, rs, vals, news_score, news_risk, quality
 
 # ----------------------------
 # Scanner
@@ -899,7 +965,7 @@ def scanner(tickers, min_entry, max_risk, min_price=5.0, min_avg_volume=500_000)
         try:
             a=analyze(sym,"1y")
             if not a: continue
-            h, i, n, t, fs, fv, rs, v, news_score, news_risk = a
+            h, i, n, t, fs, fv, rs, v, news_score, news_risk, quality = a
             close = h["Close"].dropna()
             avg_volume = float(h["Volume"].tail(20).mean())
             day_change = float((close.iloc[-1] / close.iloc[-2] - 1) * 100) if len(close) > 1 else 0.0
@@ -920,6 +986,10 @@ def scanner(tickers, min_entry, max_risk, min_price=5.0, min_avg_volume=500_000)
                     "R/R": round(v[7], 2),
                     "Exit Score": round(v[1]),
                     "News": round(news_score),
+                    "Quality": round(quality["quality_score"]),
+                    "ATR %": round(quality["atr_pct"] * 100, 1),
+                    "Gap 95%": round(quality["gap95_pct"] * 100, 1),
+                    "Earnings": quality["earnings_date"].strftime("%Y-%m-%d") if quality["earnings_date"] else "Unknown",
                 })
         except Exception: pass
     return pd.DataFrame(rows).sort_values(["Entry Score","R/R"],ascending=False) if rows else pd.DataFrame()
@@ -939,33 +1009,69 @@ def get_most_active_tickers(count=15):
 # ----------------------------
 # Backtest (rule-based prototype)
 # ----------------------------
-def backtest(ticker, period="5y", threshold=70):
-    h, i, n, t, fs, fv, rs, v, news_score, news_risk = analyze(ticker, period)
-    c=h["Close"].copy()
-    sma50=c.rolling(50).mean(); sma200=c.rolling(200).mean(); rr=rsi(c)
+def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10):
+    result = analyze(ticker, period)
+    if not result:
+        return None
+    h = result[0].dropna(subset=["Open", "High", "Low", "Close"]).copy()
+    c = h["Close"]
+    sma50 = c.rolling(50).mean(); sma200 = c.rolling(200).mean(); rr = rsi(c)
+    start = max(200, len(h) - int(test_weeks * 5.2))
+    if start >= len(h) - 1:
+        return None
+    slip = slippage_bps / 10_000
     position=False; entry=0; trades=[]; equity=1.0; curve=[]
-    for idx in range(200,len(c)):
-        p=float(c.iloc[idx])
+    for idx in range(start, len(h)):
+        close=float(c.iloc[idx]); high=float(h["High"].iloc[idx]); low=float(h["Low"].iloc[idx])
         if not position:
-            signal=(p>sma200.iloc[idx] and sma50.iloc[idx]>sma200.iloc[idx] and 45<=rr.iloc[idx]<=65)
+            signal=(close>sma200.iloc[idx] and sma50.iloc[idx]>sma200.iloc[idx] and 45<=rr.iloc[idx]<=65)
             if signal:
-                position=True; entry=p
+                position=True; entry=close*(1+slip)
         else:
-            stop=entry*.93; target=entry*1.14
-            if p<=stop or p>=target or p<sma50.iloc[idx]:
-                ret=p/entry-1; equity*=1+ret
+            stop=entry*.93; target=entry*1.14; exit_price=None
+            # Conservative rule: when both occur in one daily bar, the stop wins.
+            if low<=stop:
+                exit_price=stop*(1-slip)
+            elif high>=target:
+                exit_price=target*(1-slip)
+            elif close<sma50.iloc[idx]:
+                exit_price=close*(1-slip)
+            if exit_price is not None:
+                ret=exit_price/entry-1; equity*=1+ret
                 trades.append(ret); position=False
-        curve.append((c.index[idx],equity))
+        marked_equity = equity * (close / entry) if position else equity
+        curve.append((h.index[idx], marked_equity))
     if position:
-        ret=float(c.iloc[-1]/entry-1); equity*=1+ret; trades.append(ret)
-    eq=pd.DataFrame(curve,columns=["Date","Equity"]).set_index("Date") if curve else pd.DataFrame()
+        exit_price=float(c.iloc[-1])*(1-slip)
+        ret=exit_price/entry-1; equity*=1+ret; trades.append(ret)
+        curve[-1]=(h.index[-1],equity)
+    eq=pd.DataFrame(curve,columns=["Date","Strategy"]).set_index("Date") if curve else pd.DataFrame()
+    benchmark_return=float(c.iloc[-1]/c.iloc[start]-1)
+    spy_return=None
+    if not eq.empty:
+        eq["Buy & Hold"]=(c.loc[eq.index]/float(c.iloc[start])).values
+        try:
+            spy_history = get_data("SPY", period)[0]["Close"].dropna()
+            spy_aligned = spy_history.reindex(eq.index, method="ffill").dropna()
+            if len(spy_aligned) > 1:
+                spy_curve = spy_aligned / float(spy_aligned.iloc[0])
+                eq["SPY"] = spy_curve.reindex(eq.index, method="ffill")
+                spy_return = float((spy_curve.iloc[-1] - 1) * 100)
+        except Exception:
+            pass
+        rolling_peak=eq["Strategy"].cummax()
+        max_drawdown=float(((eq["Strategy"]/rolling_peak)-1).min()*100)
+    else:
+        max_drawdown=0.0
     wins=sum(x>0 for x in trades); ntr=len(trades)
-    return {"trades":ntr,"win_rate":(wins/ntr*100 if ntr else 0),"total_return":(equity-1)*100,"equity":eq}
+    return {"trades":ntr,"win_rate":(wins/ntr*100 if ntr else 0),
+            "total_return":(equity-1)*100,"benchmark_return":benchmark_return*100,
+            "spy_return":spy_return,"max_drawdown":max_drawdown,"equity":eq}
 
 # ----------------------------
 # UI
 # ----------------------------
-st.title("📈 Stock Analyzer V1+")
+st.title("📈 Stock Analyzer V1.1")
 st.caption("Research dashboard with scanner, news sentiment, backtesting, portfolio CSV analysis and alerts. It does not place trades.")
 
 page=st.sidebar.radio("Module",["Stock Analyzer","Scanner","Backtest","Portfolio","Alerts"])
@@ -974,7 +1080,7 @@ ticker=st.sidebar.text_input("Ticker","AAPL").upper().strip()
 if page=="Stock Analyzer":
     a=analyze(ticker,"2y")
     if not a: st.error("Data unavailable or insufficient history."); st.stop()
-    h, i, news, t, fs, fv, rs, v, news_score, news_risk = a
+    h, i, news, t, fs, fv, rs, v, news_score, news_risk, quality = a
     entry,exit,lo,hi,stop,t1,t2,rr,score_details=v
     c1,c2,c3,c4=st.columns(4); c1.metric("Entry Score",f"{entry:.0f}/100"); c2.metric("Exit Score",f"{exit:.0f}/100"); c3.metric("Risk",f"{rs:.0f}/100"); c4.metric("R/R",f"1 : {rr:.1f}")
     st.subheader(f"{ticker} — {i.get('longName',ticker)}")
@@ -1013,7 +1119,16 @@ if page=="Stock Analyzer":
     n2.metric(
         "News Event Risk",
         f"{news_risk:.0f}/100"
-    )    
+    )
+    if quality["warnings"]:
+        st.warning("Market quality checks: " + "; ".join(quality["warnings"]) + ".")
+    else:
+        st.success("Market quality checks: no major liquidity, volatility, gap or near-term earnings warning detected.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Market Quality", f"{quality['quality_score']:.0f}/100")
+    m2.metric("ATR / Price", f"{quality['atr_pct']*100:.1f}%")
+    m3.metric("95% Gap", f"{quality['gap95_pct']*100:.1f}%")
+    m4.metric("Next Earnings", quality["earnings_date"].strftime("%b %d") if quality["earnings_date"] else "Unknown")
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
     with tabs[0]:
                 technical_data = {
@@ -1081,6 +1196,14 @@ if page=="Stock Analyzer":
         )
     with tabs[3]:
         st.write({"Entry Zone":f"${lo:.2f}–${hi:.2f}","Stop":f"${stop:.2f}","Target 1":f"${t1:.2f}","Target 2":f"${t2:.2f}","Risk/Reward":f"1:{rr:.1f}"})
+        if not (stop < lo <= hi < t1):
+            st.error("Invalid trade plan: the required order is Stop < Entry Zone < Target. Do not use this setup.")
+        else:
+            estimated_gap_stop = stop * (1 - quality["gap95_pct"])
+            st.caption(
+                f"Stop check: ${stop:.2f} is below the entry zone. A stop is not guaranteed; "
+                f"with the recent 95th-percentile gap, a conservative fill could be near ${estimated_gap_stop:.2f}."
+            )
         st.subheader("Entry Score Breakdown")
         breakdown_rows = []
         for label, value in score_details.items():
@@ -1171,12 +1294,23 @@ elif page=="Scanner":
 elif page=="Backtest":
     st.header("🧪 Backtest")
     years=st.selectbox("History",["2y","5y","10y"],index=1)
+    test_weeks=st.selectbox("Test window",[4,8,12,26,52,104],index=3,format_func=lambda x: f"{x} weeks")
+    slippage_bps=st.number_input("Slippage per entry/exit (basis points)",min_value=0,max_value=100,value=10,step=5)
     if st.button("Run Backtest",type="primary"):
         with st.spinner("Running historical rule test…"):
-            b=backtest(ticker,years)
-        c1,c2,c3=st.columns(3); c1.metric("Trades",b["trades"]); c2.metric("Win Rate",f"{b['win_rate']:.1f}%"); c3.metric("Total Return",f"{b['total_return']:.1f}%")
-        if not b["equity"].empty: st.line_chart(b["equity"])
-        st.warning("This is a simplified research backtest, not a live-trading simulation. It excludes slippage, commissions, taxes and survivorship/data-quality effects.")
+            b=backtest(ticker,years,test_weeks,slippage_bps)
+        if not b:
+            st.error("There is not enough price history for this test window.")
+        else:
+            c1,c2,c3,c4,c5=st.columns(5)
+            c1.metric("Trades",b["trades"]); c2.metric("Win Rate",f"{b['win_rate']:.1f}%")
+            c3.metric("Strategy",f"{b['total_return']:.1f}%")
+            c4.metric(f"{ticker} Buy & Hold",f"{b['benchmark_return']:.1f}%")
+            c5.metric("Max Drawdown",f"{b['max_drawdown']:.1f}%")
+            if b["spy_return"] is not None:
+                st.metric("SPY reference",f"{b['spy_return']:.1f}%")
+            if not b["equity"].empty: st.line_chart(b["equity"])
+            st.warning("Research simulation only. It models the selected slippage and checks daily high/low (stop first when both levels occur), but still excludes taxes, commissions and intraday order sequencing.")
 
 elif page=="Portfolio":
     st.header("💼 Portfolio Analyzer")
@@ -1193,7 +1327,7 @@ elif page=="Portfolio":
                 try:
                     a=analyze(sym,"1y")
                     if a:
-                        h, i, n, t, fs, fv, rs, v, news_score, news_risk = a
+                        h, i, n, t, fs, fv, rs, v, news_score, news_risk, quality = a
                         rows.append({"Ticker":sym,"Price":t["p"],"Entry Score":round(v[0]),"Exit Score":round(v[1]),"Risk":round(rs),"Fundamental":round(fs),"Entry Low":v[2],"Entry High":v[3],"Stop":v[4],"Target 1":v[5],"R/R":round(v[7],2)})
                 except: pass
             if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
@@ -1209,4 +1343,4 @@ elif page=="Alerts":
     st.info("The UI stores the rule for this session. Production V2 would connect it to a scheduled server and push/email provider.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("V1+ • Rule-based research prototype • No order execution")
+st.sidebar.caption("V1.1 • Rule-based research prototype • No order execution")
