@@ -11,7 +11,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Analyzer V1.3", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Stock Analyzer V1.4", page_icon="📈", layout="wide")
 
 # ----------------------------
 # Core calculations
@@ -170,6 +170,68 @@ def technicals(hist):
     vs=85 if rel>=1.5 else 75 if rel>=1.1 else 40 if rel<.7 else 60
     technical=clamp(.25*trend+.20*mom+.20*ss+.10*vs)
     return locals()
+
+
+def market_strength(hist, spy_hist=None):
+    """Measure accumulation and relative strength with transparent inputs."""
+    data = hist.dropna(subset=["High", "Low", "Close", "Volume"]).copy()
+    if len(data) < 200:
+        return None
+
+    price_range = (data["High"] - data["Low"]).replace(0, np.nan)
+    money_flow_multiplier = (
+        ((data["Close"] - data["Low"]) - (data["High"] - data["Close"]))
+        / price_range
+    ).fillna(0)
+    money_flow_volume = money_flow_multiplier * data["Volume"]
+    volume_20 = float(data["Volume"].tail(20).sum())
+    cmf = float(money_flow_volume.tail(20).sum() / volume_20) if volume_20 else 0.0
+    cmf_score = clamp((cmf + 0.20) / 0.40 * 100)
+
+    stock_return = float(data["Close"].iloc[-1] / data["Close"].iloc[-126] - 1)
+    spy_return = None
+    if spy_hist is not None and not spy_hist.empty:
+        spy_close = spy_hist["Close"].dropna()
+        if len(spy_close) >= 126:
+            spy_return = float(spy_close.iloc[-1] / spy_close.iloc[-126] - 1)
+    relative_return = stock_return - spy_return if spy_return is not None else 0.0
+    relative_score = clamp((relative_return + 0.20) / 0.40 * 100)
+
+    volume_30 = float(data["Volume"].tail(30).mean())
+    volume_90 = float(data["Volume"].tail(90).mean())
+    volume_ratio = volume_30 / volume_90 if volume_90 else 1.0
+    volume_score = clamp((volume_ratio - 0.60) / 0.80 * 100)
+
+    sma200 = float(data["Close"].rolling(200).mean().iloc[-1])
+    price = float(data["Close"].iloc[-1])
+    sma200_distance = price / sma200 - 1 if sma200 else 0.0
+    trend_score = clamp((sma200_distance + 0.15) / 0.30 * 100)
+
+    components = {
+        "Chaikin Money Flow": 0.35 * cmf_score,
+        "Relative strength vs SPY": 0.30 * relative_score,
+        "Volume trend": 0.20 * volume_score,
+        "Position vs SMA200": 0.15 * trend_score,
+    }
+    score = clamp(sum(components.values()))
+    label = (
+        "Strong accumulation" if score >= 80
+        else "Favorable" if score >= 65
+        else "Neutral" if score >= 45
+        else "Weak" if score >= 30
+        else "Strong distribution"
+    )
+    return {
+        "score": score,
+        "label": label,
+        "cmf": cmf,
+        "stock_return_6m": stock_return,
+        "spy_return_6m": spy_return,
+        "relative_return_6m": relative_return,
+        "volume_ratio": volume_ratio,
+        "sma200_distance": sma200_distance,
+        "components": components,
+    }
 
 def fundamentals(info):
     keys=["trailingPE","forwardPE","priceToSalesTrailing12Months","returnOnEquity","profitMargins",
@@ -863,7 +925,16 @@ def news_intelligence(news, ticker="", info=None):
 def analyze_news(news, ticker="", info=None):
     _, news_score, news_risk, _ = news_intelligence(news, ticker, info)
     return news_score, news_risk
-def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY", quality=None):
+def plan(
+    t,
+    fs,
+    rs,
+    news_score=0,
+    news_risk=0,
+    asset_type="EQUITY",
+    quality=None,
+    strength=None,
+):
     def num(x):
         if hasattr(x, "iloc"):
             x = x.iloc[-1]
@@ -914,11 +985,14 @@ def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY", quality=None
     else:
         rr_multiplier, rr_label = 1.0, "Favorable"
 
-    entry = clamp(raw_entry * rr_multiplier)
-    rr_penalty = entry - raw_entry
+    entry_before_strength = clamp(raw_entry * rr_multiplier)
+    rr_penalty = entry_before_strength - raw_entry
+    strength_score = float((strength or {}).get("score", 50))
+    strength_adjustment = clamp((strength_score - 50) / 5, -10, 10)
+    entry = clamp(entry_before_strength + strength_adjustment)
 
 
-    exit_score = clamp(
+    base_exit_score = clamp(
     (15 if p < sma20 else 0)
     + (20 if p < sma50 else 0)
     + (15 if num(t["rrsi"]) > 70 else 0)
@@ -927,6 +1001,8 @@ def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY", quality=None
     + 0.20 * max(0, -news_score)
     + 0.20 * news_risk
 )
+    exit_strength_adjustment = clamp((50 - strength_score) / 5, -10, 10)
+    exit_score = clamp(base_exit_score + exit_strength_adjustment)
 
     score_details = {
         "Technical contribution": technical_component,
@@ -936,7 +1012,9 @@ def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY", quality=None
         "Market quality penalty": -quality_penalty,
         "Raw Entry Score": raw_entry,
         "R/R penalty": rr_penalty,
+        "Market Strength adjustment": strength_adjustment,
         "Final Entry Score": entry,
+        "Exit adjustment from Market Strength": exit_strength_adjustment,
         "R/R quality": rr_label,
     }
 
@@ -1036,6 +1114,12 @@ def get_intraday_data(ticker):
         prepost=False,
     )
 
+
+@st.cache_data(ttl=300)
+def get_spy_history(period="2y"):
+    """Price-only benchmark fetch shared across analyzer and scanner runs."""
+    return yf.Ticker("SPY").history(period=period, auto_adjust=False)
+
 def analyze(ticker, period="2y"):
     h, i, n = get_data(ticker, period)
 
@@ -1050,6 +1134,11 @@ def analyze(ticker, period="2y"):
     fs, fv = fundamentals(i)
     quality = market_quality(h, i)
     rs = risk(t, i, quality)
+    try:
+        strength = market_strength(h, get_spy_history(period))
+    except Exception:
+        strength = market_strength(h)
+    t["market_strength"] = strength
 
     news_score, news_risk = analyze_news(n, ticker, i)
 
@@ -1061,6 +1150,7 @@ def analyze(ticker, period="2y"):
         news_risk,
         i.get("quoteType", "EQUITY"),
         quality,
+        strength,
     )
 
     return h, i, n, t, fs, fv, rs, vals, news_score, news_risk, quality
@@ -1097,6 +1187,7 @@ def scanner(tickers, min_entry, max_risk, min_price=5.0, min_avg_volume=500_000)
                     "Exit Score": round(v[1]),
                     "News": round(news_score),
                     "Quality": round(quality["quality_score"]),
+                    "Strength": round((t.get("market_strength") or {}).get("score", 50)),
                     "ATR %": round(quality["atr_pct"] * 100, 1),
                     "Gap 95%": round(quality["gap95_pct"] * 100, 1),
                     "Earnings": quality["earnings_date"].strftime("%Y-%m-%d") if quality["earnings_date"] else "Unknown",
@@ -1207,7 +1298,7 @@ def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10, exit_mode="Ada
 # ----------------------------
 # UI
 # ----------------------------
-st.title("📈 Stock Analyzer V1.3")
+st.title("📈 Stock Analyzer V1.4")
 st.caption("Research dashboard with scanner, news sentiment, backtesting, portfolio CSV analysis and alerts. It does not place trades.")
 
 page=st.sidebar.radio("Module",["Stock Analyzer","Scanner","Backtest","Portfolio","Alerts"])
@@ -1279,6 +1370,31 @@ if page=="Stock Analyzer":
             for name, score in quality["components"].items()
         )
     )
+    strength = t.get("market_strength")
+    if strength:
+        st.subheader("Market Strength")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Market Strength", f"{strength['score']:.0f}/100", strength["label"])
+        s2.metric("Chaikin Money Flow", f"{strength['cmf']:+.3f}")
+        s3.metric(
+            "6M vs SPY",
+            f"{strength['relative_return_6m']*100:+.1f}%",
+        )
+        s4.metric("Volume 30D / 90D", f"{strength['volume_ratio']:.2f}x")
+        strength_maximums = {
+            "Chaikin Money Flow": 35,
+            "Relative strength vs SPY": 30,
+            "Volume trend": 20,
+            "Position vs SMA200": 15,
+        }
+        st.caption(
+            "Market Strength breakdown: "
+            + " • ".join(
+                f"{name} {points:.1f}/{strength_maximums[name]}"
+                for name, points in strength["components"].items()
+            )
+            + ". Entry/Exit adjustments are limited to ±10 points."
+        )
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
     with tabs[0]:
                 technical_data = {
@@ -1610,6 +1726,7 @@ elif page=="Portfolio":
                             "Exit Score": round(values[1]),
                             "Risk": round(rs),
                             "Market Quality": round(quality["quality_score"]),
+                            "Market Strength": round((t.get("market_strength") or {}).get("score", 50)),
                         })
                     except Exception:
                         continue
@@ -1648,7 +1765,7 @@ elif page=="Portfolio":
                     a=analyze(sym,"1y")
                     if a:
                         h, i, n, t, fs, fv, rs, v, news_score, news_risk, quality = a
-                        rows.append({"Ticker":sym,"Price":t["p"],"Entry Score":round(v[0]),"Exit Score":round(v[1]),"Risk":round(rs),"Fundamental":round(fs),"Entry Low":v[2],"Entry High":v[3],"Stop":v[4],"Target 1":v[5],"R/R":round(v[7],2)})
+                        rows.append({"Ticker":sym,"Price":t["p"],"Entry Score":round(v[0]),"Exit Score":round(v[1]),"Risk":round(rs),"Fundamental":round(fs),"Market Strength":round((t.get("market_strength") or {}).get("score",50)),"Entry Low":v[2],"Entry High":v[3],"Stop":v[4],"Target 1":v[5],"R/R":round(v[7],2)})
                 except: pass
             if rows: st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
         st.caption("Read-only import. The V1+ never sends orders to Fidelity.")
@@ -1663,4 +1780,4 @@ elif page=="Alerts":
     st.info("The UI stores the rule for this session. Production V2 would connect it to a scheduled server and push/email provider.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("V1.3 • Rule-based research prototype • No order execution")
+st.sidebar.caption("V1.4 • Rule-based research prototype • No order execution")

@@ -1,4 +1,4 @@
-# Stock Analyzer V1.3
+# Stock Analyzer V1.4
 Expanded prototype requested by the user.
 
 ## Added modules 1–7
@@ -17,6 +17,7 @@ Expanded prototype requested by the user.
 - Shows a conservative gap-adjusted stop-fill estimate instead of implying that stops are guaranteed.
 - Adds multi-week backtest windows, configurable slippage, intraday high/low stop checks, maximum drawdown and SPY/buy-and-hold comparisons.
 - Adds an adaptive exit option: 2-ATR initial stop, 3-ATR trailing stop and confirmation from two closes below SMA50. The original fixed 7% stop / 14% target remains available for comparison.
+- Adds a transparent Market Strength score using Chaikin Money Flow, six-month performance versus SPY, 30/90-day volume trend and distance from SMA200. Entry and exit adjustments are capped at 10 points.
 
 ## Run
 pip install -r requirements.txt
