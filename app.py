@@ -11,7 +11,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Analyzer V1.4", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Stock Analyzer V1.5", page_icon="📈", layout="wide")
 
 # ----------------------------
 # Core calculations
@@ -1298,7 +1298,38 @@ def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10, exit_mode="Ada
 # ----------------------------
 # UI
 # ----------------------------
-st.title("📈 Stock Analyzer V1.4")
+def status_label(value, green_at, red_below, higher_is_better=True):
+    if higher_is_better:
+        return "🟢 Favorable" if value >= green_at else "🔴 Unfavorable" if value < red_below else "🟡 Neutral"
+    return "🟢 Favorable" if value <= green_at else "🔴 Unfavorable" if value > red_below else "🟡 Neutral"
+
+
+def style_status_table(frame):
+    colors = {
+        "🟢": "background-color: #dcfce7; color: #14532d",
+        "🟡": "background-color: #fef9c3; color: #713f12",
+        "🔴": "background-color: #fee2e2; color: #7f1d1d",
+        "🔵": "background-color: #dbeafe; color: #1e3a8a",
+    }
+    def color_row(row):
+        status = str(row.get("Status", ""))
+        color = next((css for icon, css in colors.items() if status.startswith(icon)), "")
+        return [color] * len(row)
+    return frame.style.apply(color_row, axis=1)
+
+
+def compact_number(value, money=False):
+    if value is None or pd.isna(value):
+        return "Not available"
+    value = float(value)
+    prefix = "$" if money else ""
+    for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if abs(value) >= divisor:
+            return f"{prefix}{value/divisor:.2f}{suffix}"
+    return f"{prefix}{value:.2f}"
+
+
+st.title("📈 Stock Analyzer V1.5")
 st.caption("Research dashboard with scanner, news sentiment, backtesting, portfolio CSV analysis and alerts. It does not place trades.")
 
 page=st.sidebar.radio("Module",["Stock Analyzer","Scanner","Backtest","Portfolio","Alerts"])
@@ -1309,7 +1340,11 @@ if page=="Stock Analyzer":
     if not a: st.error("Data unavailable or insufficient history."); st.stop()
     h, i, news, t, fs, fv, rs, v, news_score, news_risk, quality = a
     entry,exit,lo,hi,stop,t1,t2,rr,score_details=v
-    c1,c2,c3,c4=st.columns(4); c1.metric("Entry Score",f"{entry:.0f}/100"); c2.metric("Exit Score",f"{exit:.0f}/100"); c3.metric("Risk",f"{rs:.0f}/100"); c4.metric("R/R",f"1 : {rr:.1f}")
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric(f"{status_label(entry,65,45)} · Entry",f"{entry:.0f}/100",help="Higher is better: attractiveness of a new entry.")
+    c2.metric(f"{status_label(exit,30,60,False)} · Exit",f"{exit:.0f}/100",help="Lower is better for holding. A high score means stronger reasons to exit.")
+    c3.metric(f"{status_label(rs,40,60,False)} · Risk",f"{rs:.0f}/100",help="Lower is better: estimated market and company risk.")
+    c4.metric(f"{status_label(rr,2,1.5)} · R/R",f"1 : {rr:.1f}",help="Potential reward for each $1 at risk. At least 1:2 is preferred.")
     st.subheader(f"{ticker} — {i.get('longName',ticker)}")
     chart_col, period_col, overlay_col = st.columns([1.4, 1, 1.2])
     with chart_col:
@@ -1339,23 +1374,32 @@ if page=="Stock Analyzer":
     n1, n2 = st.columns(2)
 
     n1.metric(
-        "News Score",
-        f"{news_score:+.0f}/100"
+        f"{status_label(news_score,15,-15)} · News Score",
+        f"{news_score:+.0f}/100",
+        help="Positive headlines raise the score; negative headlines lower it."
     )
 
     n2.metric(
-        "News Event Risk",
-        f"{news_risk:.0f}/100"
+        f"{status_label(news_risk,20,50,False)} · News Event Risk",
+        f"{news_risk:.0f}/100",
+        help="Lower is better. It estimates risk from earnings, legal, regulatory or other news events."
     )
     if quality["warnings"]:
         st.warning("Market quality checks: " + "; ".join(quality["warnings"]) + ".")
     else:
         st.success("Market quality checks: no major liquidity, volatility, gap or near-term earnings warning detected.")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Market Quality", f"{quality['quality_score']:.0f}/100")
-    m2.metric("ATR / Price", f"{quality['atr_pct']*100:.1f}%")
-    m3.metric("95% Gap", f"{quality['gap95_pct']*100:.1f}%")
-    m4.metric("Next Earnings", quality["earnings_date"].strftime("%b %d") if quality["earnings_date"] else "Unknown")
+    m1.metric(f"{status_label(quality['quality_score'],80,60)} · Market Quality", f"{quality['quality_score']:.0f}/100",help="Higher means easier trading conditions: liquidity, stable volatility, manageable gaps and no nearby earnings.")
+    m2.metric(f"{status_label(quality['atr_pct'],.03,.05,False)} · Daily movement", f"{quality['atr_pct']*100:.1f}%",help="ATR as a percentage of price. Lower usually means more stable daily movement.")
+    m3.metric(f"{status_label(quality['gap95_pct'],.02,.04,False)} · Overnight gap", f"{quality['gap95_pct']*100:.1f}%",help="A conservative estimate of unusually large overnight price gaps. Lower is better.")
+    earnings_days = quality.get("earnings_days")
+    earnings_status = (
+        "🔵 Unknown" if earnings_days is None
+        else "🔴 Near" if 0 <= earnings_days <= 7
+        else "🟡 Approaching" if 8 <= earnings_days <= 14
+        else "🟢 Not near"
+    )
+    m4.metric(f"{earnings_status} · Next Earnings", quality["earnings_date"].strftime("%b %d") if quality["earnings_date"] else "Unknown",help="More than 14 days away is favorable; within 7 days adds event risk.")
     component_maximums = {
         "Liquidity": 30,
         "Volatility stability": 25,
@@ -1374,13 +1418,14 @@ if page=="Stock Analyzer":
     if strength:
         st.subheader("Market Strength")
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Market Strength", f"{strength['score']:.0f}/100", strength["label"])
-        s2.metric("Chaikin Money Flow", f"{strength['cmf']:+.3f}")
+        s1.metric(f"{status_label(strength['score'],65,45)} · Market Strength", f"{strength['score']:.0f}/100", strength["label"],help="Higher means stronger accumulation, relative performance, volume trend and long-term price trend.")
+        s2.metric(f"{status_label(strength['cmf'],.05,-.05)} · Money Flow", f"{strength['cmf']:+.3f}",help="Above zero suggests buying pressure; below zero suggests selling pressure.")
         s3.metric(
-            "6M vs SPY",
+            f"{status_label(strength['relative_return_6m'],.02,-.02)} · 6M vs SPY",
             f"{strength['relative_return_6m']*100:+.1f}%",
+            help="How much the stock outperformed or underperformed SPY during six months."
         )
-        s4.metric("Volume 30D / 90D", f"{strength['volume_ratio']:.2f}x")
+        s4.metric(f"{status_label(strength['volume_ratio'],1,.8)} · Volume trend", f"{strength['volume_ratio']:.2f}x",help="Recent 30-day average volume divided by the 90-day average. Above 1.0 means participation is increasing.")
         strength_maximums = {
             "Chaikin Money Flow": 35,
             "Relative strength vs SPY": 30,
@@ -1397,42 +1442,82 @@ if page=="Stock Analyzer":
         )
     tabs=st.tabs(["Technical","Fundamentals","News","Plan"])
     with tabs[0]:
-                technical_data = {
-            "Indicator": [
-                "SMA20",
-                "SMA50",
-                "SMA200",
-                "RSI14",
-                "MACD",
-                "Signal",
-                "Support",
-                "Resistance",
-                "Relative Volume",
-            ],
-            "Value": [
-                t["sma20"],
-                t["sma50"],
-                t["sma200"],
-                t["rrsi"],
-                float(t["macd"].iloc[-1]),
-                float(t["sig"].iloc[-1]),
-                t["sup"],
-                t["res"],
-                t["rel"],
-            ],
-        }
-
-    st.dataframe(
-        pd.DataFrame(technical_data),
-        hide_index=True,
-        use_container_width=True,
-    )
+        current_price = float(t["p"])
+        macd_value = float(t["macd"].iloc[-1])
+        signal_value = float(t["sig"].iloc[-1])
+        rsi_value = float(t["rrsi"])
+        relative_volume = float(t["rel"])
+        rsi_status = (
+            "🟢 Balanced" if 45 <= rsi_value <= 65
+            else "🔴 Extended" if rsi_value > 72 or rsi_value < 30
+            else "🟡 Watch"
+        )
+        technical_rows = [
+            {"Indicator": "SMA20 · Short trend", "Value": f"${float(t['sma20']):.2f}", "Status": "🟢 Above" if current_price >= t["sma20"] else "🔴 Below", "Plain meaning": "Price compared with its 20-day average."},
+            {"Indicator": "SMA50 · Medium trend", "Value": f"${float(t['sma50']):.2f}", "Status": "🟢 Above" if current_price >= t["sma50"] else "🔴 Below", "Plain meaning": "Price compared with its 50-day average."},
+            {"Indicator": "SMA200 · Long trend", "Value": f"${float(t['sma200']):.2f}", "Status": "🟢 Above" if current_price >= t["sma200"] else "🔴 Below", "Plain meaning": "Above it generally indicates a positive long-term trend."},
+            {"Indicator": "RSI14 · Momentum", "Value": f"{rsi_value:.1f}/100", "Status": rsi_status, "Plain meaning": "45–65 is balanced; above 70 may be overbought and below 30 oversold."},
+            {"Indicator": "MACD · Momentum change", "Value": f"{macd_value:+.3f}", "Status": "🟢 Above signal" if macd_value >= signal_value else "🔴 Below signal", "Plain meaning": "Above its signal line suggests improving momentum."},
+            {"Indicator": "MACD signal line", "Value": f"{signal_value:+.3f}", "Status": "🔵 Reference", "Plain meaning": "Reference used to interpret MACD."},
+            {"Indicator": "Support", "Value": f"${float(t['sup']):.2f}", "Status": "🔵 Reference", "Plain meaning": "Recent area where buyers previously supported the price."},
+            {"Indicator": "Resistance", "Value": f"${float(t['res']):.2f}", "Status": "🔵 Reference", "Plain meaning": "Recent area where selling previously limited the price."},
+            {"Indicator": "Relative volume", "Value": f"{relative_volume:.2f}x", "Status": status_label(relative_volume,1.1,.7), "Plain meaning": "1.00x equals normal volume; above 1.10x shows stronger participation."},
+        ]
+        st.dataframe(
+            style_status_table(pd.DataFrame(technical_rows)),
+            hide_index=True,
+            use_container_width=True,
+        )
     with tabs[1]:
         if str(i.get("quoteType", "")).upper() == "ETF":
             st.info("ETF detected: corporate fundamentals are not used in the Entry Score.")
         else:
-            st.metric("Fundamental Score",f"{fs:.0f}/100")
-        st.dataframe(pd.DataFrame({"Metric":list(fv.keys()),"Value":list(fv.values())}),hide_index=True,use_container_width=True)
+            st.metric(f"{status_label(fs,65,45)} · Fundamental Score",f"{fs:.0f}/100",help="Higher means stronger growth, profitability, valuation and balance-sheet characteristics.")
+        fundamental_rules = {
+            "trailingPE": ("Trailing P/E", "Price paid for each $1 of past earnings."),
+            "forwardPE": ("Forward P/E", "Price paid for each estimated $1 of future earnings."),
+            "priceToSalesTrailing12Months": ("Price / Sales", "Price relative to the company's annual revenue."),
+            "returnOnEquity": ("Return on equity", "Profit generated from shareholder capital."),
+            "profitMargins": ("Profit margin", "Profit retained from each dollar of sales."),
+            "operatingMargins": ("Operating margin", "Operating profit from each dollar of sales."),
+            "revenueGrowth": ("Revenue growth", "Recent change in company sales."),
+            "earningsGrowth": ("Earnings growth", "Recent change in company profits."),
+            "freeCashflow": ("Free cash flow", "Cash remaining after operating and investment expenses."),
+            "totalDebt": ("Total debt", "All reported company debt."),
+            "totalCash": ("Total cash", "Cash and similar liquid resources."),
+            "beta": ("Beta", "Price sensitivity versus the market; 1.0 is similar to the market."),
+        }
+        percent_metrics = {"returnOnEquity", "profitMargins", "operatingMargins", "revenueGrowth", "earningsGrowth"}
+        money_metrics = {"freeCashflow", "totalDebt", "totalCash"}
+        fundamental_rows = []
+        for key, value in fv.items():
+            label, meaning = fundamental_rules.get(key, (key, "Company financial metric."))
+            if value is None or pd.isna(value):
+                display, status = "Not available", "🟡 Missing data"
+            elif key in percent_metrics:
+                display = f"{float(value)*100:+.1f}%"
+                status = status_label(float(value), .10, 0)
+            elif key in money_metrics:
+                display = compact_number(value, money=True)
+                if key == "freeCashflow":
+                    status = "🟢 Positive" if value > 0 else "🔴 Negative"
+                elif key == "totalCash":
+                    status = "🟢 Above debt" if value > (fv.get("totalDebt") or 0) else "🟡 Below debt"
+                else:
+                    status = "🟢 Below cash" if value < (fv.get("totalCash") or 0) else "🔴 Above cash"
+            elif key in {"trailingPE", "forwardPE"}:
+                display = f"{float(value):.1f}x"
+                status = "🟢 Reasonable" if 0 < value <= 25 else "🟡 Elevated" if 25 < value <= 40 else "🔴 High/invalid"
+            elif key == "priceToSalesTrailing12Months":
+                display = f"{float(value):.1f}x"
+                status = "🟢 Low" if value <= 3 else "🟡 Medium" if value <= 6 else "🔴 High"
+            elif key == "beta":
+                display = f"{float(value):.2f}"
+                status = status_label(float(value), 1.1, 1.5, False)
+            else:
+                display, status = f"{float(value):.2f}", "🔵 Reference"
+            fundamental_rows.append({"Metric": label, "Value": display, "Status": status, "Plain meaning": meaning})
+        st.dataframe(style_status_table(pd.DataFrame(fundamental_rows)),hide_index=True,use_container_width=True)
     with tabs[2]:
         st.subheader("News Intelligence")
         stories, unified_news_score, unified_news_risk, risk_summary = news_intelligence(
@@ -1780,4 +1865,4 @@ elif page=="Alerts":
     st.info("The UI stores the rule for this session. Production V2 would connect it to a scheduled server and push/email provider.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("V1.4 • Rule-based research prototype • No order execution")
+st.sidebar.caption("V1.5 • Rule-based research prototype • No order execution")
