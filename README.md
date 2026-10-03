@@ -1,13 +1,14 @@
-# Stock Analyzer V1.2
+# Stock Analyzer V1.3
 Expanded prototype requested by the user.
 
-## Added modules 1–6
+## Added modules 1–7
 1. Automatic scanner
 2. News sentiment / impact prototype
 3. Historical backtesting
 4. Fidelity CSV portfolio analyzer
-5. Alert-rule interface
-6. iPhone-friendly Streamlit web UI foundation
+5. Manual portfolio with add, update, remove, CSV backup and live analysis
+6. Alert-rule interface
+7. iPhone-friendly Streamlit web UI foundation
 
 ## Risk-quality improvements
 - Validates that every long setup follows `Stop < Entry Zone < Target`.

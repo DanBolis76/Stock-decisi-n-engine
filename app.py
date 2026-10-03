@@ -11,7 +11,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Analyzer V1.2", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Stock Analyzer V1.3", page_icon="📈", layout="wide")
 
 # ----------------------------
 # Core calculations
@@ -1207,7 +1207,7 @@ def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10, exit_mode="Ada
 # ----------------------------
 # UI
 # ----------------------------
-st.title("📈 Stock Analyzer V1.2")
+st.title("📈 Stock Analyzer V1.3")
 st.caption("Research dashboard with scanner, news sentiment, backtesting, portfolio CSV analysis and alerts. It does not place trades.")
 
 page=st.sidebar.radio("Module",["Stock Analyzer","Scanner","Backtest","Portfolio","Alerts"])
@@ -1466,6 +1466,174 @@ elif page=="Backtest":
 
 elif page=="Portfolio":
     st.header("💼 Portfolio Analyzer")
+
+    if "manual_portfolio" not in st.session_state:
+        st.session_state.manual_portfolio = []
+
+    st.subheader("Manual Portfolio")
+    st.caption(
+        "Add a position manually. Saving an existing ticker updates it. "
+        "Download the CSV to preserve the portfolio between deployments or browser sessions."
+    )
+    with st.form("manual_position_form", clear_on_submit=True):
+        p1, p2, p3 = st.columns(3)
+        manual_ticker = p1.text_input("Ticker", placeholder="AAPL").strip().upper()
+        manual_shares = p2.number_input(
+            "Shares",
+            min_value=0.000001,
+            value=1.0,
+            step=0.1,
+            format="%.6f",
+        )
+        manual_cost = p3.number_input(
+            "Average cost per share ($)",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            format="%.2f",
+        )
+        save_position = st.form_submit_button("Save position", type="primary")
+
+    if save_position:
+        if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", manual_ticker):
+            st.error("Enter a valid ticker, for example AAPL, BRK.B or NU.")
+        else:
+            position = {
+                "Ticker": manual_ticker,
+                "Shares": float(manual_shares),
+                "Average Cost": float(manual_cost),
+            }
+            existing_index = next(
+                (
+                    index
+                    for index, item in enumerate(st.session_state.manual_portfolio)
+                    if item["Ticker"] == manual_ticker
+                ),
+                None,
+            )
+            if existing_index is None:
+                st.session_state.manual_portfolio.append(position)
+                st.success(f"{manual_ticker} was added to the portfolio.")
+            else:
+                st.session_state.manual_portfolio[existing_index] = position
+                st.success(f"{manual_ticker} was updated.")
+
+    restore_file = st.file_uploader(
+        "Restore saved manual portfolio",
+        type=["csv"],
+        key="manual_portfolio_restore",
+    )
+    if restore_file is not None and st.button("Restore portfolio from CSV"):
+        try:
+            restored = pd.read_csv(restore_file)
+            required = {"Ticker", "Shares", "Average Cost"}
+            if not required.issubset(restored.columns):
+                st.error("The file must contain Ticker, Shares and Average Cost columns.")
+            else:
+                clean_positions = []
+                for _, row in restored.iterrows():
+                    symbol = str(row["Ticker"]).strip().upper()
+                    shares = float(row["Shares"])
+                    average_cost = float(row["Average Cost"])
+                    if re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol) and shares > 0 and average_cost >= 0:
+                        clean_positions.append({
+                            "Ticker": symbol,
+                            "Shares": shares,
+                            "Average Cost": average_cost,
+                        })
+                st.session_state.manual_portfolio = list({
+                    item["Ticker"]: item for item in clean_positions
+                }.values())
+                st.success(f"Restored {len(clean_positions)} saved position(s).")
+        except Exception as exc:
+            st.error(f"The portfolio could not be restored: {exc}")
+
+    if st.session_state.manual_portfolio:
+        manual_df = pd.DataFrame(st.session_state.manual_portfolio)
+        st.dataframe(
+            manual_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Shares": st.column_config.NumberColumn(format="%.6f"),
+                "Average Cost": st.column_config.NumberColumn(format="$%.2f"),
+            },
+        )
+        a1, a2, a3 = st.columns([1, 1, 2])
+        remove_ticker = a1.selectbox(
+            "Position to remove",
+            manual_df["Ticker"].tolist(),
+        )
+        if a2.button("Remove position"):
+            st.session_state.manual_portfolio = [
+                item
+                for item in st.session_state.manual_portfolio
+                if item["Ticker"] != remove_ticker
+            ]
+            st.rerun()
+        a3.download_button(
+            "Download saved portfolio CSV",
+            manual_df.to_csv(index=False),
+            "stock_analyzer_portfolio.csv",
+            "text/csv",
+        )
+
+        if st.button("Refresh portfolio analysis", type="primary"):
+            portfolio_rows = []
+            with st.spinner("Analyzing saved positions…"):
+                for position in st.session_state.manual_portfolio:
+                    symbol = position["Ticker"]
+                    try:
+                        analysis = analyze(symbol, "1y")
+                        if not analysis:
+                            continue
+                        h, i, n, t, fs, fv, rs, values, news_score, news_risk, quality = analysis
+                        shares = position["Shares"]
+                        average_cost = position["Average Cost"]
+                        current_value = shares * t["p"]
+                        cost_basis = shares * average_cost
+                        gain_loss = current_value - cost_basis if average_cost > 0 else np.nan
+                        gain_loss_pct = (
+                            gain_loss / cost_basis * 100
+                            if average_cost > 0 and cost_basis
+                            else np.nan
+                        )
+                        portfolio_rows.append({
+                            "Ticker": symbol,
+                            "Shares": shares,
+                            "Average Cost": average_cost,
+                            "Price": t["p"],
+                            "Market Value": current_value,
+                            "Gain/Loss": gain_loss,
+                            "Gain/Loss %": gain_loss_pct,
+                            "Entry Score": round(values[0]),
+                            "Exit Score": round(values[1]),
+                            "Risk": round(rs),
+                            "Market Quality": round(quality["quality_score"]),
+                        })
+                    except Exception:
+                        continue
+            if portfolio_rows:
+                st.dataframe(
+                    pd.DataFrame(portfolio_rows),
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Shares": st.column_config.NumberColumn(format="%.6f"),
+                        "Average Cost": st.column_config.NumberColumn(format="$%.2f"),
+                        "Price": st.column_config.NumberColumn(format="$%.2f"),
+                        "Market Value": st.column_config.NumberColumn(format="$%.2f"),
+                        "Gain/Loss": st.column_config.NumberColumn(format="$%.2f"),
+                        "Gain/Loss %": st.column_config.NumberColumn(format="%.2f%%"),
+                    },
+                )
+            else:
+                st.warning("No saved position could be analyzed right now.")
+    else:
+        st.info("No manual positions saved yet.")
+
+    st.divider()
+    st.subheader("Fidelity CSV Import")
     up=st.file_uploader("Upload Fidelity CSV",type=["csv"])
     if up:
         df=pd.read_csv(up)
@@ -1495,4 +1663,4 @@ elif page=="Alerts":
     st.info("The UI stores the rule for this session. Production V2 would connect it to a scheduled server and push/email provider.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("V1.2 • Rule-based research prototype • No order execution")
+st.sidebar.caption("V1.3 • Rule-based research prototype • No order execution")
