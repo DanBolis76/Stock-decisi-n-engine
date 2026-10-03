@@ -1,4 +1,4 @@
-# Stock Analyzer V1.1
+# Stock Analyzer V1.2
 Expanded prototype requested by the user.
 
 ## Added modules 1–6
@@ -15,6 +15,7 @@ Expanded prototype requested by the user.
 - Flags earnings expected within seven days when Yahoo Finance supplies the date.
 - Shows a conservative gap-adjusted stop-fill estimate instead of implying that stops are guaranteed.
 - Adds multi-week backtest windows, configurable slippage, intraday high/low stop checks, maximum drawdown and SPY/buy-and-hold comparisons.
+- Adds an adaptive exit option: 2-ATR initial stop, 3-ATR trailing stop and confirmation from two closes below SMA50. The original fixed 7% stop / 14% target remains available for comparison.
 
 ## Run
 pip install -r requirements.txt

@@ -8,7 +8,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Stock Analyzer V1.1", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Stock Analyzer V1.2", page_icon="📈", layout="wide")
 
 # ----------------------------
 # Core calculations
@@ -1009,41 +1009,66 @@ def get_most_active_tickers(count=15):
 # ----------------------------
 # Backtest (rule-based prototype)
 # ----------------------------
-def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10):
+def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10, exit_mode="Adaptive trend"):
     result = analyze(ticker, period)
     if not result:
         return None
     h = result[0].dropna(subset=["Open", "High", "Low", "Close"]).copy()
     c = h["Close"]
     sma50 = c.rolling(50).mean(); sma200 = c.rolling(200).mean(); rr = rsi(c)
+    previous_close = c.shift(1)
+    true_range = pd.concat([
+        h["High"] - h["Low"],
+        (h["High"] - previous_close).abs(),
+        (h["Low"] - previous_close).abs(),
+    ], axis=1).max(axis=1)
+    atr14 = true_range.rolling(14).mean()
     start = max(200, len(h) - int(test_weeks * 5.2))
     if start >= len(h) - 1:
         return None
     slip = slippage_bps / 10_000
     position=False; entry=0; trades=[]; equity=1.0; curve=[]
+    peak=0; active_stop=0; below_sma50_days=0; exit_reasons={}
     for idx in range(start, len(h)):
         close=float(c.iloc[idx]); high=float(h["High"].iloc[idx]); low=float(h["Low"].iloc[idx])
         if not position:
             signal=(close>sma200.iloc[idx] and sma50.iloc[idx]>sma200.iloc[idx] and 45<=rr.iloc[idx]<=65)
             if signal:
-                position=True; entry=close*(1+slip)
+                position=True; entry=close*(1+slip); peak=high; below_sma50_days=0
+                entry_atr=float(atr14.iloc[idx]) if pd.notna(atr14.iloc[idx]) else entry*.035
+                active_stop=entry-max(2*entry_atr, entry*.05)
         else:
-            stop=entry*.93; target=entry*1.14; exit_price=None
-            # Conservative rule: when both occur in one daily bar, the stop wins.
-            if low<=stop:
-                exit_price=stop*(1-slip)
-            elif high>=target:
-                exit_price=target*(1-slip)
-            elif close<sma50.iloc[idx]:
-                exit_price=close*(1-slip)
+            exit_price=None; exit_reason=None
+            if exit_mode == "Adaptive trend":
+                # Test today's low against yesterday's stop before using today's high.
+                if low<=active_stop:
+                    exit_price=active_stop*(1-slip); exit_reason="ATR/trailing stop"
+                else:
+                    peak=max(peak, high)
+                    current_atr=float(atr14.iloc[idx]) if pd.notna(atr14.iloc[idx]) else entry*.035
+                    active_stop=max(active_stop, peak-3*current_atr)
+                    below_sma50_days = below_sma50_days + 1 if close<sma50.iloc[idx] else 0
+                    if below_sma50_days>=2:
+                        exit_price=close*(1-slip); exit_reason="Two closes below SMA50"
+            else:
+                stop=entry*.93; target=entry*1.14
+                # Conservative rule: when both occur in one daily bar, the stop wins.
+                if low<=stop:
+                    exit_price=stop*(1-slip); exit_reason="Fixed stop"
+                elif high>=target:
+                    exit_price=target*(1-slip); exit_reason="Fixed target"
+                elif close<sma50.iloc[idx]:
+                    exit_price=close*(1-slip); exit_reason="Close below SMA50"
             if exit_price is not None:
                 ret=exit_price/entry-1; equity*=1+ret
                 trades.append(ret); position=False
+                exit_reasons[exit_reason]=exit_reasons.get(exit_reason,0)+1
         marked_equity = equity * (close / entry) if position else equity
         curve.append((h.index[idx], marked_equity))
     if position:
         exit_price=float(c.iloc[-1])*(1-slip)
         ret=exit_price/entry-1; equity*=1+ret; trades.append(ret)
+        exit_reasons["End of test"]=exit_reasons.get("End of test",0)+1
         curve[-1]=(h.index[-1],equity)
     eq=pd.DataFrame(curve,columns=["Date","Strategy"]).set_index("Date") if curve else pd.DataFrame()
     benchmark_return=float(c.iloc[-1]/c.iloc[start]-1)
@@ -1066,12 +1091,13 @@ def backtest(ticker, period="5y", test_weeks=26, slippage_bps=10):
     wins=sum(x>0 for x in trades); ntr=len(trades)
     return {"trades":ntr,"win_rate":(wins/ntr*100 if ntr else 0),
             "total_return":(equity-1)*100,"benchmark_return":benchmark_return*100,
-            "spy_return":spy_return,"max_drawdown":max_drawdown,"equity":eq}
+            "spy_return":spy_return,"max_drawdown":max_drawdown,"equity":eq,
+            "exit_reasons":exit_reasons,"exit_mode":exit_mode}
 
 # ----------------------------
 # UI
 # ----------------------------
-st.title("📈 Stock Analyzer V1.1")
+st.title("📈 Stock Analyzer V1.2")
 st.caption("Research dashboard with scanner, news sentiment, backtesting, portfolio CSV analysis and alerts. It does not place trades.")
 
 page=st.sidebar.radio("Module",["Stock Analyzer","Scanner","Backtest","Portfolio","Alerts"])
@@ -1295,10 +1321,11 @@ elif page=="Backtest":
     st.header("🧪 Backtest")
     years=st.selectbox("History",["2y","5y","10y"],index=1)
     test_weeks=st.selectbox("Test window",[4,8,12,26,52,104],index=3,format_func=lambda x: f"{x} weeks")
+    exit_mode=st.selectbox("Exit strategy",["Adaptive trend","Fixed 7% / 14%"])
     slippage_bps=st.number_input("Slippage per entry/exit (basis points)",min_value=0,max_value=100,value=10,step=5)
     if st.button("Run Backtest",type="primary"):
         with st.spinner("Running historical rule test…"):
-            b=backtest(ticker,years,test_weeks,slippage_bps)
+            b=backtest(ticker,years,test_weeks,slippage_bps,exit_mode)
         if not b:
             st.error("There is not enough price history for this test window.")
         else:
@@ -1309,8 +1336,9 @@ elif page=="Backtest":
             c5.metric("Max Drawdown",f"{b['max_drawdown']:.1f}%")
             if b["spy_return"] is not None:
                 st.metric("SPY reference",f"{b['spy_return']:.1f}%")
+            st.caption("Exit reasons: " + ", ".join(f"{name}: {count}" for name,count in b["exit_reasons"].items()))
             if not b["equity"].empty: st.line_chart(b["equity"])
-            st.warning("Research simulation only. It models the selected slippage and checks daily high/low (stop first when both levels occur), but still excludes taxes, commissions and intraday order sequencing.")
+            st.warning("Research simulation only. The adaptive exit uses a 2-ATR initial stop, a 3-ATR trailing stop and two closes below SMA50. It models slippage but still excludes taxes, commissions and exact intraday sequencing.")
 
 elif page=="Portfolio":
     st.header("💼 Portfolio Analyzer")
@@ -1343,4 +1371,4 @@ elif page=="Alerts":
     st.info("The UI stores the rule for this session. Production V2 would connect it to a scheduled server and push/email provider.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("V1.1 • Rule-based research prototype • No order execution")
+st.sidebar.caption("V1.2 • Rule-based research prototype • No order execution")
