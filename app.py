@@ -1,6 +1,9 @@
 
 import math, io, re
 from datetime import datetime, timezone
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
+import xml.etree.ElementTree as ET
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -911,10 +914,89 @@ def plan(t, fs, rs, news_score=0, news_risk=0, asset_type="EQUITY", quality=None
 
     return entry, exit_score, lo, hi, stop, t1, t2, rr, score_details
 
+def _google_news_rss(ticker, company_name="", limit=15):
+    """Return a Yahoo-compatible news list when Yahoo has no usable headlines."""
+    company_name = re.sub(
+        r"\s+(inc\.?|corporation|corp\.?|ltd\.?|plc|class [a-z])$",
+        "",
+        str(company_name).strip(),
+        flags=re.IGNORECASE,
+    )
+    search_name = f'"{company_name}"' if company_name else ticker
+    query = quote_plus(f"{search_name} {ticker} stock when:7d")
+    url = (
+        "https://news.google.com/rss/search?q=" + query
+        + "&hl=en-US&gl=US&ceid=US:en"
+    )
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0 StockAnalyzer/1.2"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            root = ET.fromstring(response.read())
+    except Exception:
+        return []
+
+    stories = []
+    for item in root.findall("./channel/item")[:limit]:
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        source = item.find("source")
+        publisher = (
+            (source.text or "").strip()
+            if source is not None
+            else "Google News"
+        )
+        if not title:
+            continue
+        stories.append({
+            "content": {
+                "title": title,
+                "summary": "",
+                "provider": {"displayName": publisher},
+                "canonicalUrl": {"url": link},
+                "pubDate": (item.findtext("pubDate") or "").strip(),
+            }
+        })
+    return stories
+
+
+def _deduplicate_news(news):
+    unique, seen = [], set()
+    for item in news or []:
+        content = item.get("content", item) if isinstance(item, dict) else {}
+        title = str(content.get("title") or item.get("title") or "").strip()
+        key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
 @st.cache_data(ttl=300)
 def get_data(ticker,period="2y"):
-    tk=yf.Ticker(ticker)
-    return tk.history(period=period,auto_adjust=False), tk.info, tk.news
+    tk = yf.Ticker(ticker)
+    history = tk.history(period=period, auto_adjust=False)
+    info = tk.info
+    news = []
+    try:
+        news = tk.get_news(count=20, tab="news") or []
+    except Exception:
+        try:
+            news = tk.news or []
+        except Exception:
+            news = []
+
+    # Yahoo intermittently returns an empty feed. Use an independent
+    # company-specific source instead of leaving the News tab blank. Keeping
+    # this as a fallback also prevents a scanner run from making one extra
+    # network request for every symbol when Yahoo is healthy.
+    if not news:
+        news = _google_news_rss(
+            ticker,
+            info.get("shortName") or info.get("longName") or "",
+        )
+    news = _deduplicate_news(news)
+    return history, info, news
 
 @st.cache_data(ttl=60)
 def get_intraday_data(ticker):
